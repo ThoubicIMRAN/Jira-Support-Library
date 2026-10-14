@@ -65,8 +65,8 @@ services:
     restart: "no"
 
   app:
-    build: .
-    image: ${APP_IMAGE:-jira-support-library:local}
+    image: ghcr.io/thoubicimran/jira-support-library:latest
+    pull_policy: always
     restart: unless-stopped
     env_file:
       - .env
