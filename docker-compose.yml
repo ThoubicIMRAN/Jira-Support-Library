@@ -66,6 +66,7 @@ services:
 
   app:
     build: .
+    image: ${APP_IMAGE:-jira-support-library:local}
     restart: unless-stopped
     env_file:
       - .env

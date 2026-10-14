@@ -42,3 +42,15 @@ Rule: a stylesheet must not contain the `<` character (the HTML sanitiser drops 
 ```bash
 pip install -r requirements-dev.txt && python -m pytest -q
 ```
+
+## Docker image (GitHub Container Registry)
+GitHub Actions (`.github/workflows/ci-docker.yml`) lints and tests every push, then builds and publishes the image to
+`ghcr.io/<owner>/<repo>` (tags: `latest`, short commit SHA, and `1.2.3` / `1.2` for `v1.2.3` git tags). Pull requests build but do not push.
+
+Run the published image instead of building locally:
+```bash
+echo YOUR_PAT | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin   # PAT with read:packages (private images only)
+# in .env:  APP_IMAGE=ghcr.io/<owner>/<repo>:latest
+docker compose pull app && docker compose up -d
+```
+The image contains no configuration, secrets or data: everything comes from `.env` and the database volume at runtime.
