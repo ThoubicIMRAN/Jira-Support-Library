@@ -1,0 +1,58 @@
+# Native Streamlit theme = Jira Command Library prototype (light palette).
+# Dark mode and per-user accent/radius are applied on top via CSS tokens
+# (see services/preference_service.py and assets/styles.css).
+[theme]
+base = "light"
+primaryColor = "#0c46ce"
+backgroundColor = "#f0f4fb"
+secondaryBackgroundColor = "#e8edf8"
+textColor = "#111827"
+font = "DM Sans"
+headingFont = "Syne"
+codeFont = "IBM Plex Mono"
+baseRadius = "medium"
+borderColor = "#dde3f0"
+
+[[theme.fontFaces]]
+family = "DM Sans"
+url = "app/static/fonts/dm-sans-latin-wght-normal.woff2"
+weight = "100 1000"
+
+[[theme.fontFaces]]
+family = "Syne"
+url = "app/static/fonts/syne-latin-700-normal.woff2"
+weight = 700
+
+[[theme.fontFaces]]
+family = "Syne"
+url = "app/static/fonts/syne-latin-800-normal.woff2"
+weight = 800
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/ibm-plex-mono-latin-400-normal.woff2"
+weight = 400
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/fonts/ibm-plex-mono-latin-500-normal.woff2"
+weight = 500
+
+[theme.sidebar]
+backgroundColor = "#0c1f6e"
+secondaryBackgroundColor = "#0a1a5c"
+textColor = "#ffffff"
+borderColor = "#1a3a9e"
+
+[server]
+maxUploadSize = 10
+enableXsrfProtection = true
+enableStaticServing = true
+headless = true
+
+[client]
+showSidebarNavigation = false
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
