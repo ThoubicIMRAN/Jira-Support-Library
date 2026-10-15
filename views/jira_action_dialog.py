@@ -389,7 +389,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         )
         if st.session_state.pop(_sk(response_id, "pending_clear_clip"), None):
             st.session_state[_sk(response_id, "clipboard_bridge")] = ""
-        paste_b64 = st.text_area(
+        _paste_b64 = st.text_area(
             f"clipboard_bridge_{str(response_id).replace('-', '')[:12]}",
             key=_sk(response_id, "clipboard_bridge"),
             height=40,
