@@ -330,7 +330,6 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             mention_mode=mention_mode,
             mention_username=mention_user or issue.get("reporter_username") or "",
             resolution_notes=resolution_notes if is_closing else "",
-            issue=issue,
         )
         try:
             from utils.personalization import personalize
