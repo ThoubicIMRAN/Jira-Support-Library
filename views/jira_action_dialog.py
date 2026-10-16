@@ -356,9 +356,30 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             )
         except Exception:
             pass
+
+        # Dynamic [bracket] fields — library template unchanged; fill only for this post
+        from services.template_fields import extract_bracket_fields, apply_bracket_fields
+
+        _field_source = body_template or ""
+        _bracket_labels = extract_bracket_fields(_field_source)
+        # Also detect fields that remain after personalize (if greeting path left any)
+        for _lbl in extract_bracket_fields(preview):
+            if _lbl not in _bracket_labels:
+                _bracket_labels.append(_lbl)
+        field_values: dict[str, str] = {}
+        if _bracket_labels:
+            st.markdown("**Template fields**")
+            st.caption("Fill-in values for this ticket only. The library template is not modified.")
+            for _lbl in _bracket_labels:
+                _fkey = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
+                field_values[_lbl] = st.text_input(_lbl, key=_fkey, placeholder=f"Value for [{_lbl}]")
+            preview = apply_bracket_fields(preview, field_values)
+            # Re-apply on body if some tokens only in template path
+            preview = apply_bracket_fields(preview, field_values)
+
         with st.expander("Preview", expanded=True):
             st.code(preview, language=None, wrap_lines=True)
-            st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R")
+            st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · [custom fields] above")
 
     with tab_a:
         t1, t2 = st.columns(2)
