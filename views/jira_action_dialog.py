@@ -369,10 +369,10 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         field_values: dict[str, str] = {}
         if _bracket_labels:
             st.markdown("**Template fields**")
-            st.caption("Fill-in values for this ticket only. The library template is not modified.")
+            st.caption("Fill-in for this ticket only (library unchanged). Paste plain URLs, markdown links, or HTML links — they are normalized for Jira.")
             for _lbl in _bracket_labels:
                 _fkey = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
-                field_values[_lbl] = st.text_input(_lbl, key=_fkey, placeholder=f"Value for [{_lbl}]")
+                field_values[_lbl] = st.text_input(_lbl, key=_fkey, placeholder=f"Text or paste link for [{_lbl}]")
             preview = apply_bracket_fields(preview, field_values)
             # Re-apply on body if some tokens only in template path
             preview = apply_bracket_fields(preview, field_values)
