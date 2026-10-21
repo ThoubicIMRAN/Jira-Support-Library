@@ -180,6 +180,63 @@ class JiraClient:
             return self.post(f"/rest/api/{api}/issue/{key}/comment", json=payload)
 
 
+
+
+    def add_watcher(self, key: str, account_or_username: str) -> None:
+        """Add a watcher / participant. Cloud uses accountId; Server/DC uses username."""
+        api = "3" if self.product == "cloud" else "2"
+        url = self._url(f"/rest/api/{api}/issue/{key}/watchers")
+        # Jira expects a raw JSON string body: "username" or "accountId"
+        ident = (account_or_username or "").strip()
+        if not ident:
+            raise JiraError("Watcher identity is empty.")
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        auth = self._session.auth
+        bearer = self._session.headers.get("Authorization")
+        if bearer:
+            headers["Authorization"] = bearer
+        import json as _json
+        resp = self._session.post(
+            url,
+            headers=headers,
+            data=_json.dumps(ident),
+            auth=auth,
+            timeout=self.timeout,
+        )
+        if resp.status_code >= 400:
+            raise JiraError(
+                f"Add watcher failed HTTP {resp.status_code}: {(resp.text or '')[:200]}",
+                status=resp.status_code,
+            )
+
+    def search_users(self, query: str, max_results: int = 10) -> list[dict]:
+        """User picker for mentions / watchers."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        api = "3" if self.product == "cloud" else "2"
+        if self.product == "cloud":
+            data = self.get(
+                f"/rest/api/{api}/user/search",
+                params={"query": q, "maxResults": max_results},
+            )
+        else:
+            data = self.get(
+                f"/rest/api/{api}/user/search",
+                params={"username": q, "maxResults": max_results},
+            )
+        if not isinstance(data, list):
+            return []
+        out = []
+        for u in data:
+            out.append({
+                "accountId": u.get("accountId") or "",
+                "name": u.get("name") or "",
+                "displayName": u.get("displayName") or u.get("name") or "",
+                "emailAddress": u.get("emailAddress") or "",
+            })
+        return out
+
     def add_attachment(
         self,
         key: str,

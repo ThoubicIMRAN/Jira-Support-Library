@@ -271,3 +271,57 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
     except Exception:
         logger.exception("import_project_payload failed")
         raise
+
+
+
+def list_category_tree(project_id: int) -> list[dict]:
+    """Return [{id, name, parent_id, children:[{id,name,...}]}] top-level only with children."""
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(Category)
+            .where(Category.project_id == project_id)
+            .order_by(Category.sort_order, Category.id)
+        ).all()
+    by_parent: dict[int | None, list] = {}
+    for r in rows:
+        by_parent.setdefault(r.parent_id, []).append(r)
+    def node(c):
+        return {
+            "id": c.id,
+            "name": c.name,
+            "parent_id": c.parent_id,
+            "children": [node(ch) for ch in by_parent.get(c.id, [])],
+        }
+    return [node(c) for c in by_parent.get(None, [])]
+
+
+def create_category(user_id, role, project_id, name, parent_id=None):
+    name = (name or "").strip()
+    if not name:
+        raise ContentError("Category name is required.")
+    with SessionLocal() as db:
+        _check_project(user_id, role, project_id)
+        if parent_id:
+            parent = db.get(Category, parent_id)
+            if not parent or parent.project_id != project_id:
+                raise ContentError("Parent category not found.")
+            if parent.parent_id is not None:
+                raise ContentError("Only one level of sub-categories is supported.")
+        order = (
+            db.scalar(
+                select(func.max(Category.sort_order)).where(
+                    Category.project_id == project_id,
+                    Category.parent_id == parent_id if parent_id else Category.parent_id.is_(None),
+                )
+            )
+            or 0
+        ) + 1
+        row = Category(project_id=project_id, name=name, parent_id=parent_id, sort_order=order)
+        db.add(row)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise ContentError("Category already exists or could not be saved.")
+        audit(db, user_id, "create", "category", row.id, {"name": name, "parent_id": parent_id})
+        return row.id

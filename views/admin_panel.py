@@ -102,7 +102,7 @@ def render(user, *, embedded: bool = False):
                 with st.form('add_category'):
                     name = st.text_input('New category name'); add = st.form_submit_button('Add category')
                 if add and name.strip():
-                    row = Category(project_id=project_id, name=name.strip(), sort_order=len(categories)); db.add(row)
+                    row = Category(project_id=project_id, name=name.strip(), sort_order=len(categories), parent_id=(parent_choice or None)); db.add(row)
                     try: db.commit(); st.rerun()
                     except IntegrityError: db.rollback(); st.error('Category already exists.')
                 for index, category in enumerate(categories):

@@ -22,10 +22,18 @@ class Project(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow); updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,onupdate=utcnow)
     categories:Mapped[list['Category']]=relationship(back_populates='project',cascade='all, delete-orphan',order_by='Category.sort_order')
 class Category(Base):
-    __tablename__='categories'; __table_args__=(UniqueConstraint('project_id','name'),)
-    id:Mapped[int]=mapped_column(primary_key=True); project_id:Mapped[int]=mapped_column(ForeignKey('projects.id',ondelete='CASCADE'))
-    name:Mapped[str]=mapped_column(String(180)); sort_order:Mapped[int]=mapped_column(Integer,default=0); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
-    project:Mapped[Project]=relationship(back_populates='categories'); responses:Mapped[list['Response']]=relationship(back_populates='category',cascade='all, delete-orphan',order_by='Response.sort_order')
+    __tablename__ = "categories"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(180))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    project: Mapped[Project] = relationship(back_populates="categories")
+    parent: Mapped[Category | None] = relationship(remote_side="Category.id", back_populates="children")
+    children: Mapped[list[Category]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    responses: Mapped[list[Response]] = relationship(back_populates="category", cascade="all, delete-orphan", order_by="Response.sort_order")
 class Response(Base):
     __tablename__='responses'
     id:Mapped[str]=mapped_column(String(80),primary_key=True); category_id:Mapped[int]=mapped_column(ForeignKey('categories.id',ondelete='CASCADE'))
@@ -354,3 +362,24 @@ class BulkPostLog(Base):
     failed_json: Mapped[str] = mapped_column(Text, default='[]')
     body_preview: Mapped[str] = mapped_column(String(300), default='')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class UserSnipeITCredential(Base):
+    """Per-user Snipe-IT API token (Bearer)."""
+    __tablename__ = "user_snipeit_credentials"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+
+class CompanySettings(Base):
+    """Single-row company / tenant branding for enterprise deployments."""
+    __tablename__ = "company_settings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), default="Support Organization")
+    support_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    primary_color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    website: Mapped[str | None] = mapped_column(String(500), nullable=True)

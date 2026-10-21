@@ -68,8 +68,17 @@ def _write_log(user_id, prefix, keys, ok, failed, body):
 
 def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix: str = "", *,
                       time_raw: str = "", internal: bool = False,
+                      mention_mode: str = "plain",
+                      resolution_notes: str = "",
                       max_tickets: int | None = None, delay: float | None = None) -> dict:
-    """Post one comment to many tickets. Returns {prefix, ok, failed[(key, msg)], log_id}."""
+    """Post one comment to many tickets. Returns {prefix, ok, failed[(key, msg)], log_id}.
+
+    ``body`` must be the **template** (with @R / @NAME / Customer), not a preview
+    already filled for a single ticket. Each key is loaded so reporter and ticket
+    tokens are applied per issue.
+    """
+    from services.jira_text import build_comment_preview
+
     limit = BULK_MAX_TICKETS if max_tickets is None else max_tickets
     pause = BULK_DELAY_SECONDS if delay is None else delay
     if not (body or "").strip():
@@ -80,18 +89,29 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
 
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.id == user_id))
-    needs_issue = bool(_CONTEXT_RE.search(body))
     ok: list[str] = []
     failed: list[list[str]] = []
 
     for index, key in enumerate(keys):
         try:
-            context, recipient = {"TICKET": key, "PROJECT": prefix}, "Customer"
-            if needs_issue:
-                issue = jira_service.load_issue(user_id, key)
-                recipient = issue.get("reporter") or "Customer"
-                context.update(SUMMARY=issue.get("summary"), ASSIGNEE=issue.get("assignee"), STATUS=issue.get("status"))
-            text = personalize(body, user, None, recipient=recipient, context=context)
+            issue = jira_service.load_issue(user_id, key)
+            recipient = (issue.get("reporter") or "Customer").strip() or "Customer"
+            mention_user = (issue.get("reporter_username") or "").strip()
+            context = {
+                "TICKET": key,
+                "PROJECT": prefix,
+                "SUMMARY": issue.get("summary") or "",
+                "ASSIGNEE": issue.get("assignee") or issue.get("assignee_name") or "",
+                "STATUS": issue.get("status") or "",
+            }
+            text = build_comment_preview(
+                body,
+                reporter_name=recipient,
+                mention_mode=mention_mode or "plain",
+                mention_username=mention_user,
+                resolution_notes=resolution_notes or "",
+            )
+            text = personalize(text, user, None, recipient=recipient, context=context)
             jira_service.add_comment(user_id, key, text, internal=internal)
             if (time_raw or "").strip():
                 jira_service.log_work(user_id, key, time_raw)
@@ -109,6 +129,7 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
 
     log_id = _write_log(user_id, prefix, keys, ok, failed, body)
     return {"prefix": prefix, "ok": ok, "failed": failed, "log_id": log_id}
+
 
 
 def list_bulk_logs(user_id: int | None = None, limit: int = 50) -> list[dict]:
