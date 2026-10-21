@@ -31,9 +31,9 @@ class Category(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     project: Mapped[Project] = relationship(back_populates="categories")
-    parent: Mapped[Category | None] = relationship(remote_side="Category.id", back_populates="children")
-    children: Mapped[list[Category]] = relationship(back_populates="parent", cascade="all, delete-orphan")
-    responses: Mapped[list[Response]] = relationship(back_populates="category", cascade="all, delete-orphan", order_by="Response.sort_order")
+    parent: Mapped["Category | None"] = relationship(remote_side="Category.id", back_populates="children")
+    children: Mapped[list["Category"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    responses: Mapped[list["Response"]] = relationship(back_populates="category", cascade="all, delete-orphan", order_by="Response.sort_order")
 class Response(Base):
     __tablename__='responses'
     id:Mapped[str]=mapped_column(String(80),primary_key=True); category_id:Mapped[int]=mapped_column(ForeignKey('categories.id',ondelete='CASCADE'))
@@ -245,8 +245,6 @@ class AIGenerationLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-def init_db(): Base.metadata.create_all(engine)
-
 
 # --- Jira integration ---
 class UserJiraCredential(Base):
@@ -383,3 +381,8 @@ class CompanySettings(Base):
     logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     primary_color: Mapped[str | None] = mapped_column(String(20), nullable=True)
     website: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+def init_db():
+    """Create all tables (safe to call repeatedly)."""
+    Base.metadata.create_all(engine)
