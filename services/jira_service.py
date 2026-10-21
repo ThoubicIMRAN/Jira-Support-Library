@@ -248,6 +248,7 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
         "summary": f.get("summary") or "",
         "status": status or "",
         "assignee": assignee.get("displayName") or assignee.get("name") or "Unassigned",
+        "assignee_username": assignee.get("name") or assignee.get("accountId") or "",
         "reporter": reporter_name,
         "reporter_username": reporter_username,
         "issuetype": (f.get("issuetype") or {}).get("name") or "",
@@ -512,3 +513,25 @@ def suggest_library_for_issue(user_id: int, project_id: int, issue: dict) -> lis
             "score": score,
         }
     ]
+
+
+
+def add_watchers(user_id: int, issue_key: str, identities: list[str]) -> list[str]:
+    """Add watchers by username (Server/DC) or accountId (Cloud). Returns list of errors."""
+    client = get_client_for_user(user_id)
+    errors: list[str] = []
+    for ident in identities:
+        ident = (ident or "").strip()
+        if not ident:
+            continue
+        try:
+            client.add_watcher(issue_key, ident)
+            _audit(user_id, "jira_watcher", issue_key, ident)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{ident}: {exc}")
+    return errors
+
+
+def search_jira_users(user_id: int, query: str) -> list[dict]:
+    client = get_client_for_user(user_id)
+    return client.search_users(query)

@@ -28,11 +28,14 @@ from services.workspace_service import designation_overrides, favorite_ids, togg
 from utils.layout import card_columns, flash, show_flash
 from utils.navigation import PAGE_HOME, goto
 from utils.personalization import PLACEHOLDER_HELP, personalize
+from services.jira_text import ensure_signature_placeholders
 from views.jira_action_dialog import jira_action_dialog
 from services.project_access import can_view_project
 from services.stale import is_stale, stale_label
 from views.bulk_jira import bulk_comment_dialog
 from views.jira_panel import render_jira_panel
+from utils.personalization import PLACEHOLDER_HELP, personalize
+from services.jira_text import ensure_signature_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +61,46 @@ def _load_project_context(project_id: int):
 
 
 def _category_options(project_id: int) -> dict[str, int]:
+    """Labels for selects: top-level as name; children as 'Parent / Child'."""
     with SessionLocal() as db:
-        cats = db.scalars(
+        rows = db.scalars(
             select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
         ).all()
-        return {c.name: c.id for c in cats}
+    by_id = {r.id: r for r in rows}
+    out: dict[str, int] = {}
+    for r in rows:
+        if r.parent_id:
+            parent = by_id.get(r.parent_id)
+            label = f"{parent.name} / {r.name}" if parent else r.name
+        else:
+            # Prefer selecting leaves; still allow parent if it may hold responses
+            label = r.name
+        # Unique labels
+        base = label
+        n = 2
+        while label in out and out[label] != r.id:
+            label = f"{base} ({n})"
+            n += 1
+        out[label] = r.id
+    return out
+
+
+def _category_filter_options(project_id: int) -> list[tuple[str, int | None]]:
+    """Sidebar filter: (label, category_id|None for all)."""
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
+        ).all()
+    by_id = {r.id: r for r in rows}
+    opts: list[tuple[str, int | None]] = [("All categories", None)]
+    for r in rows:
+        if r.parent_id is None:
+            opts.append((r.name, r.id))
+            for ch in rows:
+                if ch.parent_id == r.id:
+                    opts.append((f"  └ {ch.name}", ch.id))
+    return opts
+
 
 
 def _save_error(exc: Exception) -> None:
@@ -87,10 +125,28 @@ def add_response_dialog(user_id: int, role: str, project_id: int) -> None:
         c1, c2 = st.columns([1, 3])
         badge = c1.text_input("Badge", max_chars=40)
         preview = c2.text_input("Preview", max_chars=300)
-        body = st.text_area("Response body", height=260, help=PLACEHOLDER_HELP)
+        st.caption(
+            "Greeting: **@R** (reporter). Signature: **@NAME** and **@DESIGNATION** "
+            "(your profile — do not type your name into the template)."
+        )
+        _default_body = (
+            "Hello @R,\n\n"
+            "Your request has been processed.\n\n"
+            "Thank you for your cooperation.\n\n"
+            "Best regards,\n"
+            "@NAME\n"
+            "@DESIGNATION\n"
+        )
+        body = st.text_area(
+            "Response body",
+            value=_default_body,
+            height=260,
+            help=PLACEHOLDER_HELP,
+        )
         submitted = st.form_submit_button("Save response", type="primary", width="stretch")
     if submitted:
         try:
+            body = ensure_signature_placeholders(body or "")
             create_response(user_id, role, names[cat_name], title, badge, preview, body)
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, ContentError):
@@ -112,11 +168,12 @@ def edit_response_dialog(user_id: int, role: str, project_id: int, row) -> None:
         c1, c2 = st.columns([1, 3])
         badge = c1.text_input("Badge", row.badge or "", max_chars=40)
         preview = c2.text_input("Preview", row.preview or "", max_chars=300)
-        body = st.text_area("Response body", row.response_body or "", height=260)
+        body = st.text_area("Response body", row.response_body or "", height=260, help=PLACEHOLDER_HELP)
+        st.caption("Keep **@NAME** / **@DESIGNATION** in the signature — they are filled from your profile.")
         submitted = st.form_submit_button("Update response", type="primary", width="stretch")
     if submitted:
         try:
-            update_response(user_id, role, row.id, names[cat_name], title, badge, preview, body)
+            update_response(user_id, role, row.id, names[cat_name], title, badge, preview, ensure_signature_placeholders(body or ""))
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, ContentError):
                 logger.exception("Update response failed")
@@ -184,6 +241,8 @@ def _render_response_card(user, project: Project, category: Category, row, favor
             slot = iter(cols)
             if jira_on and next(slot).button("🎫", key=f"jira_{row.id}", width="stretch", help="Jira: comment, log time, transition"):
                 jira_action_dialog(user, project, body, response_id=str(row.id))
+            if jira_on and next(slot).button("📦", key=f"snipe_{row.id}", width="stretch", help="Snipe-IT: checkout, checkin, notes"):
+                snipeit_action_dialog(user, note_body=body, response_id=str(row.id))
             if next(slot).button("★" if is_fav else "☆", key=f"fav_{row.id}", width="stretch",
                                  help="Remove from favorites" if is_fav else "Add to favorites"):
                 _toggle_favorite(user.id, row.id)
@@ -220,13 +279,23 @@ def _render_categories(user, project, categories: Sequence[Category], term: str,
     columns_n = card_columns()
     visible = 0
     for category in categories:
-        if category_filter and category.id != category_filter:
-            continue
+        if category_filter:
+            if category.id != category_filter and getattr(category, "parent_id", None) != category_filter:
+                continue
         rows = _filter_rows(category, term)
         if not rows:
             continue
         visible += len(rows)
-        section_header(category.name, len(rows), project.color)
+        _sec = category.name
+        if getattr(category, "parent_id", None):
+            try:
+                with SessionLocal() as _db:
+                    _p = _db.get(Category, category.parent_id)
+                    if _p:
+                        _sec = f"{_p.name} / {category.name}"
+            except Exception:
+                pass
+        section_header(_sec, len(rows), project.color)
         columns = st.columns(columns_n, gap="medium")
         for index, row in enumerate(rows):
             with columns[index % columns_n]:

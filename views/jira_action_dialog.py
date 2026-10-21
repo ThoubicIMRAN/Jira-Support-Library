@@ -1,6 +1,8 @@
 """Jira action dialog — compact tabs (Ticket | Comment | Post)."""
 from __future__ import annotations
 
+import re
+
 import base64
 import logging
 
@@ -357,6 +359,51 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         except Exception:
             pass
 
+
+        # ---- Mentions / participants (watchers) ----
+        with st.expander("Mentions & participants", expanded=False):
+            st.caption(
+                "Mention in the comment with Jira wiki [~username]. "
+                "Anyone written as @username in the template or fields is mentioned and **automatically added as a watcher/participant** on the ticket (whether they were already on it or not)."
+            )
+            assignee_name = issue.get("assignee") or ""
+            assignee_id = issue.get("assignee_username") or ""
+            c_m1, c_m2 = st.columns(2)
+            mention_assignee = c_m1.checkbox(
+                f"Mention assignee ({assignee_name or '—'})",
+                value=False,
+                key=_sk(response_id, "mention_assignee"),
+                disabled=not bool(assignee_id or assignee_name),
+            )
+            add_assignee_watcher = c_m2.checkbox(
+                "Add assignee as watcher",
+                value=False,
+                key=_sk(response_id, "watch_assignee"),
+                disabled=not bool(assignee_id),
+            )
+            extra_mentions = st.text_input(
+                "Other usernames to mention (comma-separated)",
+                key=_sk(response_id, "extra_mentions"),
+                placeholder="j.doe, a.smith",
+                help="Server/DC: Jira username. Cloud: accountId or email if your site allows.",
+            )
+            add_as_watchers = st.checkbox(
+                "Also add these users as watchers on the ticket",
+                value=True,
+                key=_sk(response_id, "extra_as_watchers"),
+            )
+            # Append mention lines into preview path via session for post
+            mention_bits = []
+            if mention_assignee and (assignee_id or assignee_name):
+                mention_bits.append(f"[~{assignee_id}]" if assignee_id else assignee_name)
+            for part in re.split(r"[,;\s]+", extra_mentions or ""):
+                part = part.strip().lstrip("@")
+                if part:
+                    mention_bits.append(f"[~{part}]")
+            st.session_state[_sk(response_id, "mention_line")] = (
+                ("cc: " + " ".join(mention_bits)) if mention_bits else ""
+            )
+
         # Dynamic [bracket] fields — library template unchanged; fill only for this post
         from services.template_fields import extract_bracket_fields, apply_bracket_fields
 
@@ -376,6 +423,18 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             preview = apply_bracket_fields(preview, field_values)
             # Re-apply on body if some tokens only in template path
             preview = apply_bracket_fields(preview, field_values)
+
+        _ml = st.session_state.get(_sk(response_id, "mention_line")) or ""
+        if _ml and _ml not in (preview or ""):
+            preview = ((preview or "").rstrip() + "\n\n" + _ml + "\n")
+
+        from services.mention_utils import extract_at_usernames, to_jira_wiki_mentions
+        preview = to_jira_wiki_mentions(preview or "")
+        st.session_state[_sk(response_id, "auto_watch_from_body")] = extract_at_usernames(
+            (st.session_state.get(_sk(response_id, "body_override")) or response_body or "")
+            + " " + (st.session_state.get(_sk(response_id, "mention_line")) or "")
+            + " " + (st.session_state.get(_sk(response_id, "extra_mentions")) or "")
+        )
 
         with st.expander("Preview", expanded=True):
             st.code(preview, language=None, wrap_lines=True)
@@ -424,13 +483,23 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 from services.bulk_comment import parse_keys, post_bulk_comment
                 with st.spinner("Bulk posting…"):
                     try:
+                        # Use template + [fields], NOT preview (preview has first ticket's reporter)
+                        from services.template_fields import apply_bracket_fields, extract_bracket_fields
+                        _bulk_body = st.session_state.get(_sk(response_id, "body_override")) or response_body
+                        _fv = {}
+                        for _lbl in extract_bracket_fields(_bulk_body):
+                            _fk = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
+                            _fv[_lbl] = st.session_state.get(_fk, "")
+                        _bulk_body = apply_bracket_fields(_bulk_body, _fv)
                         result = post_bulk_comment(
                             user.id,
                             parse_keys(bulk_raw),
-                            preview,
+                            _bulk_body,
                             required_prefix=req,
                             time_raw=time_raw,
                             internal=internal,
+                            mention_mode=st.session_state.get(_sk(response_id, "mention_mode"), "plain"),
+                            resolution_notes=st.session_state.get(_sk(response_id, "res_notes"), "") or "",
                         )
                         if result.get("ok"):
                             st.success("OK: " + ", ".join(result["ok"]))
@@ -476,6 +545,41 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 results.append("Comment (internal)" if internal else "Comment (customer)")
             except Exception as exc:
                 errors.append(f"Comment: {_msg(exc)}")
+
+
+            # Watchers / participants — always add anyone @mentioned in the comment
+            from services.mention_utils import extract_at_usernames
+            watch_ids = []
+            if st.session_state.get(_sk(response_id, "watch_assignee")) and issue.get("assignee_username"):
+                watch_ids.append(issue["assignee_username"])
+            for part in re.split(r"[,;\s]+", st.session_state.get(_sk(response_id, "extra_mentions")) or ""):
+                part = (part or "").strip().lstrip("@")
+                if part:
+                    watch_ids.append(part)
+            for u in st.session_state.get(_sk(response_id, "auto_watch_from_body")) or []:
+                watch_ids.append(u)
+            # Also scan final preview text for @user / already converted names
+            for u in extract_at_usernames(preview or ""):
+                watch_ids.append(u)
+            # de-dupe preserve order
+            _seen_w = set()
+            _deduped = []
+            for w in watch_ids:
+                wl = (w or "").strip().lower()
+                if wl and wl not in _seen_w:
+                    _seen_w.add(wl)
+                    _deduped.append(w.strip())
+            watch_ids = _deduped
+            if watch_ids:
+                try:
+                    werr = jira_service.add_watchers(user.id, issue["key"], watch_ids)
+                    if werr:
+                        for e in werr:
+                            errors.append(f"Watcher: {e}")
+                    else:
+                        results.append("Watchers updated")
+                except Exception as exc:
+                    errors.append(f"Watchers: {_msg(exc)}")
 
             for f in uploads or []:
                 try:

@@ -86,3 +86,50 @@ def build_comment_preview(
     body = insert_resolution_notes(body, resolution_notes)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
+
+def ensure_signature_placeholders(text: str) -> str:
+    """Ensure closing uses @NAME / @DESIGNATION; strip a hardcoded name block after Best regards.
+
+    Does not change the meaning of the message body. Safe to run when saving a template.
+    """
+    import re
+    t = (text or "").rstrip()
+    if not t:
+        return (
+            "Hello @R,\n\n"
+            "\n\n"
+            "Thank you for your cooperation.\n\n"
+            "Best regards,\n"
+            "@NAME\n"
+            "@DESIGNATION\n"
+        )
+    # If already has @NAME in signature area, leave structure but still clean hardcoded lines after regards
+    # Remove lines after "Best regards," that look like a plain name/designation (no @)
+    m = re.search(
+        r"(?is)((?:Best regards|Kind regards|Regards),?\s*\n)((?:[^\n]+\n){0,4})\s*$",
+        t,
+    )
+    if m:
+        head, tail = t[: m.start(1)], m.group(1)
+        rest = m.group(2) or ""
+        lines = [ln.strip() for ln in rest.splitlines() if ln.strip()]
+        kept = []
+        for ln in lines:
+            if ln.upper() in ("@NAME", "@DESIGNATION", "@ROLE") or ln.startswith("@"):
+                kept.append(ln)
+            # drop plain personal name/designation lines (no URL, short)
+            elif re.match(r"^https?://", ln, re.I):
+                kept.append(ln)
+            else:
+                # skip hardcoded agent lines
+                continue
+        if "@NAME" not in "\n".join(kept).upper():
+            kept.append("@NAME")
+        if "@DESIGNATION" not in "\n".join(kept).upper():
+            kept.append("@DESIGNATION")
+        return (head + tail + "\n".join(kept) + "\n").rstrip() + "\n"
+
+    # No regards block: append standard signature
+    if "@NAME" not in t.upper():
+        t = t.rstrip() + "\n\nBest regards,\n@NAME\n@DESIGNATION\n"
+    return t
