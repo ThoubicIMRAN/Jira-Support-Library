@@ -375,7 +375,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 key=_sk(response_id, "mention_assignee"),
                 disabled=not bool(assignee_id or assignee_name),
             )
-            _add_assignee_watcher = c_m2.checkbox(
+            c_m2.checkbox(
                 "Add assignee as watcher",
                 value=False,
                 key=_sk(response_id, "watch_assignee"),
@@ -387,7 +387,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 placeholder="j.doe, a.smith",
                 help="Server/DC: Jira username. Cloud: accountId or email if your site allows.",
             )
-            _add_as_watchers = st.checkbox(
+            st.checkbox(
                 "Also add these users as watchers on the ticket",
                 value=True,
                 key=_sk(response_id, "extra_as_watchers"),
