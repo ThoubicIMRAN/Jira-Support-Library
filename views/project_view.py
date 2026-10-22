@@ -34,8 +34,6 @@ from services.project_access import can_view_project
 from services.stale import is_stale, stale_label
 from views.bulk_jira import bulk_comment_dialog
 from views.jira_panel import render_jira_panel
-from utils.personalization import PLACEHOLDER_HELP, personalize
-from services.jira_text import ensure_signature_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +89,6 @@ def _category_filter_options(project_id: int) -> list[tuple[str, int | None]]:
         rows = db.scalars(
             select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
         ).all()
-    by_id = {r.id: r for r in rows}
     opts: list[tuple[str, int | None]] = [("All categories", None)]
     for r in rows:
         if r.parent_id is None:
@@ -241,8 +238,6 @@ def _render_response_card(user, project: Project, category: Category, row, favor
             slot = iter(cols)
             if jira_on and next(slot).button("🎫", key=f"jira_{row.id}", width="stretch", help="Jira: comment, log time, transition"):
                 jira_action_dialog(user, project, body, response_id=str(row.id))
-            if jira_on and next(slot).button("📦", key=f"snipe_{row.id}", width="stretch", help="Snipe-IT: checkout, checkin, notes"):
-                snipeit_action_dialog(user, note_body=body, response_id=str(row.id))
             if next(slot).button("★" if is_fav else "☆", key=f"fav_{row.id}", width="stretch",
                                  help="Remove from favorites" if is_fav else "Add to favorites"):
                 _toggle_favorite(user.id, row.id)

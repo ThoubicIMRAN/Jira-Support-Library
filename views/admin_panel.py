@@ -100,7 +100,15 @@ def render(user, *, embedded: bool = False):
                 project_id = st.selectbox('Project', [p.id for p in projects], format_func=lambda value: next(p.name for p in projects if p.id == value))
                 categories = db.scalars(select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)).all()
                 with st.form('add_category'):
-                    name = st.text_input('New category name'); add = st.form_submit_button('Add category')
+                    name = st.text_input('New category / sub-category name')
+                    _parents = [c for c in categories if not getattr(c, 'parent_id', None)]
+                    parent_choice = st.selectbox(
+                        'Parent (optional)',
+                        options=[0] + [p.id for p in _parents],
+                        format_func=lambda i: '— Top-level —' if i == 0 else next((p.name for p in _parents if p.id == i), str(i)),
+                        key=f'new_cat_parent_{project_id}',
+                    )
+                    add = st.form_submit_button('Add category')
                 if add and name.strip():
                     row = Category(project_id=project_id, name=name.strip(), sort_order=len(categories), parent_id=(parent_choice or None)); db.add(row)
                     try: db.commit(); st.rerun()

@@ -1,5 +1,4 @@
 """Round 1: bulk comment safety, placeholders, Confluence host lock, attachments, project access."""
-from conftest import PASSWORD
 import pytest
 from sqlalchemy import select
 
@@ -17,7 +16,7 @@ def uid():
         row = db.scalar(select(User).where(User.username == "r1_user"))
         if not row:
             row = User(username="r1_user", full_name="Rita One", designation="Engineer", role="manager",
-                       password_hash=hash_password(PASSWORD), must_change_password=False)
+                       password_hash=hash_password("Pass-12345"), must_change_password=False)
             db.add(row); db.commit(); db.refresh(row)
         return row.id
 
@@ -88,7 +87,20 @@ def test_reporter_swap_loads_each_ticket(uid, fake_jira):
 def test_auth_failure_aborts_the_rest(uid, monkeypatch):
     seen = []
     def deny(user_id, key, body, *, internal=False):
-        seen.append(key); raise JiraError("Jira API 401", status=401)
+        seen.append(key)
+        raise JiraError("Jira API 401", status=401)
+
+    monkeypatch.setattr(
+        js,
+        "load_issue",
+        lambda uid, key: {
+            "reporter": "Asha",
+            "summary": "S",
+            "assignee": "Bob",
+            "status": "Open",
+            "reporter_username": "asha",
+        },
+    )
     monkeypatch.setattr(js, "add_comment", deny)
     result = bc.post_bulk_comment(uid, ["SIT-1", "SIT-2", "SIT-3"], "x", delay=0)
     assert seen == ["SIT-1"] and len(result["failed"]) == 3
