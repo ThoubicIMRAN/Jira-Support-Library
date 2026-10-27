@@ -8,7 +8,7 @@ from auth import allowed, hash_password
 from config import ROLES
 from database import SessionLocal, User
 from utils.validators import valid_password
-from services.account_service import admin_reset_password, delete_user
+from services.account_service import admin_reset_password, admin_set_password, delete_user, unlock_login
 
 
 def render(user) -> None:
@@ -99,7 +99,21 @@ def render(user) -> None:
 
                     st.markdown("---")
                     if account.id != user.id:
-                        if st.button("Reset password", key=f"ucrp_{account.id}", use_container_width=True):
+                        if st.button("Unlock account", key=f"ucul_{account.id}", use_container_width=True):
+                            try:
+                                n = unlock_login(account.username)
+                                st.success(f"Unlocked ({n} attempts cleared).")
+                            except Exception:
+                                st.error("Unlock failed.")
+                        new_pw = st.text_input("Temp password", type="password", key=f"ucpw_{account.id}")
+                        if st.button("Set password", key=f"ucsp_{account.id}", use_container_width=True):
+                            try:
+                                admin_set_password(account.id, new_pw or "", user.id)
+                                unlock_login(account.username)
+                                st.success("Password set; user must change it on next login.")
+                            except Exception as exc:
+                                st.error(str(exc))
+                        if st.button("Reset password (email link)", key=f"ucrp_{account.id}", use_container_width=True):
                             try:
                                 admin_reset_password(account.id, user.id)
                                 st.success("A secure password-reset link has been emailed to the user.")
