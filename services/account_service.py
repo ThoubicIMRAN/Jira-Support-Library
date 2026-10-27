@@ -152,7 +152,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
     - CASCADE children removed with the user
     - User row deleted
     """
-    from sqlalchemy import delete as sa_delete, update as sa_update, text
+    from sqlalchemy import delete as sa_delete, update as sa_update
     from database import (
         AuditLog,
         LoginAttempt,
@@ -217,7 +217,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         except Exception:
             pass
         try:
-            from database import Announcement, MaintenanceWindow, FeatureFeedback
+            from database import Announcement, MaintenanceWindow
             for Model, col in (
                 (Announcement, "created_by"),
                 (MaintenanceWindow, "created_by"),
