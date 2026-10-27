@@ -5,6 +5,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, Project, Category, User, AuditLog, Response, ResponseTag, ResponseTagLink
 from auth import allowed, hash_password
+from services.account_service import admin_set_password, delete_user, unlock_login
 from config import ROLES
 from utils.validators import valid_hex_color, clean_key, valid_password
 from services.content_service import move_project, move_category
@@ -192,43 +193,62 @@ def render(user, *, embedded: bool = False):
                         st.rerun()
 
                     if can_manage:
-                        b1, b2, b3 = st.columns([2, 2, 1])
-                        new_pw = b1.text_input(
-                            'New password',
-                            type='password',
-                            key=f'pw_{account.id}',
-                            label_visibility='collapsed',
-                            placeholder='New password (min 8 chars)',
-                        )
-                        if b2.button('Reset password', key=f'pw_reset_{account.id}', width='stretch'):
-                            if not valid_password(new_pw or ''):
-                                st.error('Password must be at least 8 characters.')
-                            else:
-                                account.password_hash = hash_password(new_pw)
-                                account.must_change_password = True
-                                log(db, user.id, 'reset_password', 'user', account.id, account.username)
-                                db.commit()
-                                st.success(f'Password reset for {account.username}. User must change it on next login.')
+                        locked = False
+                        try:
+                            from services.security_policy import is_locked
+                            locked = is_locked(account.username)
+                        except Exception:
+                            pass
+                        if locked:
+                            st.warning(f"🔒 **{account.username}** is temporarily locked (too many failed logins).")
+                            if st.button("Unlock account", key=f"unlock_{account.id}", type="primary"):
+                                n = unlock_login(account.username)
+                                st.success(f"Unlocked. Cleared {n} login attempt record(s).")
                                 st.rerun()
-                        if b3.button('🗑️', key=f'user_del_{account.id}', help='Delete user', width='stretch'):
-                            st.session_state[f'confirm_del_user_{account.id}'] = True
-                        if st.session_state.get(f'confirm_del_user_{account.id}'):
-                            st.warning(f'Delete **{account.username}** permanently?')
+
+                        with st.form(f"pw_form_{account.id}"):
+                            st.caption("Set a temporary password (user must change it after sign-in).")
+                            new_pw = st.text_input(
+                                "New password",
+                                type="password",
+                                key=f"pw_{account.id}",
+                                placeholder="Min 8 characters",
+                            )
+                            pw_go = st.form_submit_button("Reset password", type="primary")
+                        if pw_go:
+                            try:
+                                admin_set_password(account.id, new_pw or "", user.id)
+                                unlock_login(account.username)
+                                st.success(
+                                    f"Password set for **{account.username}**. "
+                                    "Account unlocked; user must change password on next login."
+                                )
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
+                            except Exception as exc:
+                                st.error(f"Password reset failed: {exc}")
+
+                        if st.button("🗑️ Delete user", key=f"user_del_{account.id}"):
+                            st.session_state[f"confirm_del_user_{account.id}"] = True
+                        if st.session_state.get(f"confirm_del_user_{account.id}"):
+                            st.warning(
+                                f"Delete **{account.username}**? "
+                                "Audit logs are kept (user field cleared). Sessions and personal data are removed."
+                            )
                             d1, d2 = st.columns(2)
-                            if d1.button('Confirm delete', key=f'user_del_yes_{account.id}', type='primary'):
+                            if d1.button("Confirm delete", key=f"user_del_yes_{account.id}", type="primary"):
                                 try:
-                                    log(db, user.id, 'delete_user', 'user', account.id, account.username)
-                                    db.delete(account)
-                                    db.commit()
-                                except IntegrityError:
-                                    db.rollback()
-                                    st.error('This user owns audit or content records and cannot be deleted. Deactivate the account instead.')
-                                else:
-                                    st.session_state.pop(f'confirm_del_user_{account.id}', None)
-                                    st.success('User deleted.')
+                                    delete_user(account.id, user.id)
+                                    st.session_state.pop(f"confirm_del_user_{account.id}", None)
+                                    st.success("User deleted. Audit history preserved.")
                                     st.rerun()
-                            if d2.button('Cancel', key=f'user_del_no_{account.id}'):
-                                st.session_state.pop(f'confirm_del_user_{account.id}', None)
+                                except ValueError as exc:
+                                    st.error(str(exc))
+                                except Exception as exc:
+                                    st.error(f"Delete failed: {exc}")
+                            if d2.button("Cancel", key=f"user_del_no_{account.id}"):
+                                st.session_state.pop(f"confirm_del_user_{account.id}", None)
                                 st.rerun()
                     elif is_self:
                         st.caption('You cannot modify or delete your own superadmin account here.')

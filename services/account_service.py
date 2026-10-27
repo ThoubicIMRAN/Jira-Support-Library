@@ -101,3 +101,176 @@ def register_user(username, full_name, email, password, designation='Support Eng
         ))
         db.commit()
         return True
+
+
+def admin_set_password(target_user_id: int, new_password: str, actor_id: int) -> None:
+    """Superadmin sets a temporary password; user must change on next login."""
+    from utils.validators import valid_password
+    if not valid_password(new_password or ""):
+        raise ValueError("Password must be at least 8 characters.")
+    with SessionLocal() as db:
+        target = db.get(User, target_user_id)
+        if not target:
+            raise ValueError("User not found.")
+        if target.id == actor_id:
+            raise ValueError("Use Change password for your own account.")
+        target.password_hash = hash_password(new_password)
+        target.must_change_password = True
+        target.is_active = True
+        db.add(AuditLog(
+            user_id=actor_id,
+            action="admin_set_password",
+            entity_type="user",
+            entity_id=str(target.id),
+            details=target.username,
+        ))
+        db.commit()
+    unlock_login(target.username)
+
+
+def unlock_login(identity: str) -> int:
+    """Clear recent failed login attempts so the account is no longer locked."""
+    from database import LoginAttempt
+    from sqlalchemy import delete as sa_delete
+    ident = (identity or "").strip().lower()
+    if not ident:
+        return 0
+    with SessionLocal() as db:
+        # Also try username as stored (case variants)
+        result = db.execute(
+            sa_delete(LoginAttempt).where(LoginAttempt.identity == ident)
+        )
+        db.commit()
+        return result.rowcount or 0
+
+
+def delete_user(target_user_id: int, actor_id: int) -> None:
+    """Delete a user account while preserving audit history.
+
+    - AuditLog.user_id set to NULL (logs kept)
+    - Other nullable FKs nulled
+    - CASCADE children removed with the user
+    - User row deleted
+    """
+    from sqlalchemy import delete as sa_delete, update as sa_update, text
+    from database import (
+        AuditLog,
+        LoginAttempt,
+        PasswordResetToken,
+        UserInvitation,
+        UserAuthIdentity,
+        AppSession,
+        OAuthTransaction,
+        UserPreference,
+        UserFavorite,
+        UserPinnedProject,
+        UserRecentResponse,
+        UserSavedSearch,
+        UserNotificationState,
+        UserProjectDesignation,
+        UserProjectAccess,
+        UserJiraCredential,
+        UserConfluenceCredential,
+        BulkPostLog,
+    )
+
+    if target_user_id == actor_id:
+        raise ValueError("You cannot delete your own account.")
+
+    with SessionLocal() as db:
+        target = db.get(User, target_user_id)
+        if not target:
+            raise ValueError("User not found.")
+        if target.role == "superadmin":
+            # Prevent deleting the last superadmin
+            from sqlalchemy import func
+            n = db.scalar(
+                select(func.count()).select_from(User).where(
+                    User.role == "superadmin", User.is_active == True  # noqa: E712
+                )
+            ) or 0
+            if n <= 1:
+                raise ValueError("Cannot delete the last active superadmin.")
+
+        username = target.username
+        uid = target.id
+
+        # Preserve audit: null out actor references
+        db.execute(
+            sa_update(AuditLog).where(AuditLog.user_id == uid).values(user_id=None)
+        )
+        # Null other non-cascade FKs that block delete
+        try:
+            db.execute(
+                sa_update(UserInvitation)
+                .where(UserInvitation.invited_by == uid)
+                .values(invited_by=None)
+            )
+        except Exception:
+            pass
+        try:
+            db.execute(
+                sa_update(OAuthTransaction)
+                .where(OAuthTransaction.link_user_id == uid)
+                .values(link_user_id=None)
+            )
+        except Exception:
+            pass
+        try:
+            from database import Announcement, MaintenanceWindow, FeatureFeedback
+            for Model, col in (
+                (Announcement, "created_by"),
+                (MaintenanceWindow, "created_by"),
+            ):
+                if hasattr(Model, col):
+                    db.execute(
+                        sa_update(Model).where(getattr(Model, col) == uid).values(**{col: None})
+                    )
+        except Exception:
+            pass
+        try:
+            db.execute(
+                sa_update(BulkPostLog).where(BulkPostLog.user_id == uid).values(user_id=None)
+            )
+        except Exception:
+            pass
+
+        # Explicit cleanup of identity-related rows (CASCADE should handle, but be safe)
+        for Model in (
+            PasswordResetToken,
+            UserAuthIdentity,
+            AppSession,
+            UserPreference,
+            UserFavorite,
+            UserPinnedProject,
+            UserRecentResponse,
+            UserSavedSearch,
+            UserNotificationState,
+            UserProjectDesignation,
+            UserProjectAccess,
+            UserJiraCredential,
+            UserConfluenceCredential,
+        ):
+            try:
+                db.execute(sa_delete(Model).where(Model.user_id == uid))
+            except Exception:
+                pass
+
+        try:
+            from database import UserSnipeITCredential
+            db.execute(sa_delete(UserSnipeITCredential).where(UserSnipeITCredential.user_id == uid))
+        except Exception:
+            pass
+
+        # Login attempts by username
+        db.execute(sa_delete(LoginAttempt).where(LoginAttempt.identity == username.lower()))
+
+        db.add(AuditLog(
+            user_id=actor_id,
+            action="delete_user",
+            entity_type="user",
+            entity_id=str(uid),
+            details=f"deleted username={username}",
+        ))
+        db.delete(target)
+        db.commit()
