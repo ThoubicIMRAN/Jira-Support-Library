@@ -27,6 +27,8 @@ PAGE_NOTIFICATIONS = "notifications"
 PAGE_AI = "ai"
 PAGE_ADMIN_SETTINGS = "admin_settings"
 PAGE_SUPPORT = "support"
+PAGE_DASHBOARD = "dashboard"
+PAGE_ASSETS = "assets"  # Snipe-IT asset management hub
 
 VALID_PAGES = {
     PAGE_LOGIN,
@@ -43,6 +45,8 @@ VALID_PAGES = {
     PAGE_AI,
     PAGE_ADMIN_SETTINGS,
     PAGE_SUPPORT,
+    PAGE_DASHBOARD,
+    PAGE_ASSETS,
 }
 
 
@@ -105,8 +109,6 @@ def goto(
         if workspace_tab not in WORKSPACE_TABS:
             workspace_tab = WORKSPACE_TAB_SEARCH
         st.session_state[SESSION_WORKSPACE_TAB] = workspace_tab
-        # Separate intent key so the workspace widget can override its
-        # own sticky value on the next render.
         st.session_state[SESSION_WORKSPACE_TAB_INTENT] = workspace_tab
 
     if clear_project:
