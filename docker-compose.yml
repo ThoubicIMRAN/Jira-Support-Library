@@ -19,22 +19,15 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
+    # Ollama stays internal to the compose network (do not publish 11434 in production)
+    # ports:
+    #   - "11434:11434"
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
       timeout: 10s
       retries: 10
       start_period: 20s
-    # GPU (optional): uncomment if host has NVIDIA + nvidia-container-toolkit
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
 
   ollama-init:
     image: ollama/ollama:latest
@@ -65,13 +58,12 @@ services:
     restart: "no"
 
   app:
-    image: ghcr.io/thoubicimran/jira-support-library:latest
-    pull_policy: always
+    build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env (postgresql+psycopg://USER:PASSWORD@db:5432/DBNAME)}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       OLLAMA_BASE: ${OLLAMA_BASE:-http://ollama:11434}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}

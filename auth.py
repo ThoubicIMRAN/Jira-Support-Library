@@ -8,7 +8,8 @@ import bcrypt
 from sqlalchemy import select
 from database import SessionLocal, User, AuditLog
 from services.security_policy import is_locked, record_attempt
-from config import ALLOW_DEFAULT_BOOTSTRAP_ADMIN, APP_ENV, BOOTSTRAP_ADMIN_USERNAME
+from services.rate_limit import limit_login, RateLimitExceeded
+from config import APP_ENV, ALLOW_DEFAULT_BOOTSTRAP_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,14 @@ def allowed(role, permission):
     )
 
 
-def authenticate(username, password):
-    identity = username.strip().lower()
+def authenticate(username, password, *, client_ip: str = ""):
+    identity = (username or "").strip().lower()
+    if not identity:
+        return None, "Invalid credentials or inactive account."
+    try:
+        limit_login(identity, client_ip or "")
+    except RateLimitExceeded as exc:
+        return None, f"Too many login attempts. Try again in about {exc.retry_after} seconds."
     if is_locked(identity):
         return None, "Account temporarily locked. Try again later."
     with SessionLocal() as db:
@@ -83,7 +90,7 @@ def ensure_superadmin():
     force_reset = os.getenv("FORCE_RESET_ADMIN_PASSWORD", "").strip().lower() in ("1", "true", "yes", "on")
 
     with SessionLocal() as db:
-        admin = db.scalar(select(User).where(User.username == BOOTSTRAP_ADMIN_USERNAME))
+        admin = db.scalar(select(User).where(User.username == "admin"))
 
         if admin is None:
             generated = False
@@ -92,14 +99,14 @@ def ensure_superadmin():
                     raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must be set to create the first admin in production.")
                 password, generated = secrets.token_urlsafe(16), True
             db.add(User(
-                username=BOOTSTRAP_ADMIN_USERNAME, email=None, full_name="System Administrator",
+                username="admin", email=None, full_name="System Administrator",
                 designation="Administrator", password_hash=hash_password(password),
                 role="superadmin", must_change_password=True, is_active=True,
             ))
             db.commit()
-            logger.info("Bootstrap superadmin '%s' created (must change password on first login)", BOOTSTRAP_ADMIN_USERNAME)
+            logger.info("Bootstrap superadmin 'admin' created (must change password on first login)")
             if generated:
-                sys.stderr.write(f"\n[dev] Bootstrap admin created. username={BOOTSTRAP_ADMIN_USERNAME} password={password}\n\n")
+                sys.stderr.write(f"\n[dev] Bootstrap admin created. username=admin password={password}\n\n")
             return
 
         if force_reset and password:
