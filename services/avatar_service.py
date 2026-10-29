@@ -51,7 +51,6 @@ def get_avatar(user_id: int) -> tuple[bytes, str] | None:
 
 
 def render_avatar_image(user, *, width: int = 64) -> None:
-    """Show avatar in Streamlit if present."""
     import streamlit as st
 
     data = getattr(user, "avatar_data", None)

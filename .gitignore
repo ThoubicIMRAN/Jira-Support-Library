@@ -1,9 +1,28 @@
+# Python
 __pycache__/
 *.py[cod]
-.env
+*.egg-info/
 .venv/
-.pytest_cache/
-data/*.db
-data/*.db-journal
-backups/*
-!backups/.gitkeep
+venv/
+.env
+.env.*
+!.env.example
+
+# Local / packaging artifacts (never ship into the image tree)
+FEATURE_*/
+FIX_*/
+*_PACK/
+*.zip
+!requirements*.txt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime data
+data/
+backups/
+*.db
+*.sqlite3
