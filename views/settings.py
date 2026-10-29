@@ -1,5 +1,6 @@
 """Unified Personal Settings — appearance, layout, account, Jira connection."""
 from __future__ import annotations
+from config import APP_NAME, APP_VERSION, APP_BUILD_LABEL
 
 import streamlit as st
 
@@ -21,6 +22,16 @@ def render(user) -> None:
         "Appearance, account, and integrations in one place.",
         icon="🎨",
     )
+
+    with st.expander("Application information", expanded=False):
+        st.markdown(f"**{APP_NAME}**")
+        st.markdown(f"Version **{APP_VERSION}**")
+        try:
+            st.caption(APP_BUILD_LABEL)
+        except Exception:
+            pass
+        st.caption("Open **What's New** in the sidebar for full release notes.")
+
 
     tab_appearance, tab_account, tab_jira = st.tabs(
         ["🎨 Appearance & layout", "👤 Account & profile", "🎫 Jira connection"]
@@ -133,3 +144,15 @@ def render(user) -> None:
 
     with tab_jira:
         render_jira_settings(user)
+        _render_snipeit_section(user)
+
+
+def _render_snipeit_section(user):
+    import streamlit as st
+    try:
+        from views import snipeit_settings
+        st.divider()
+        st.subheader("Snipe-IT")
+        snipeit_settings.render(user, embedded=True)
+    except Exception as exc:
+        st.caption(f"Snipe-IT settings unavailable: {exc}")
