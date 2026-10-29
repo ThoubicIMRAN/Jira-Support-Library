@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 
 import streamlit as st
 import pandas as pd
@@ -88,7 +87,7 @@ def render(user) -> None:
             n_proj = sum(len(v) for v in types.values())
             with st.expander(f"**{project_key}** ({n_proj})", expanded=n_proj <= 8):
                 for itype, rows in sorted(types.items(), key=lambda x: x[0]):
-                    st.markdown(f"**{itype}** · {len(rows)}")
+                    st.markdown(f"**{itype}** · {len(rows)")
                     for it in rows:
                         due = it.get("duedate") or "—"
                         cols = st.columns([1.4, 3.5, 1.2, 1.2, 0.8])

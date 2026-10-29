@@ -1,8 +1,6 @@
 """Profile avatar storage (bytes in DB) with validation."""
 from __future__ import annotations
 
-from sqlalchemy import select
-
 from database import SessionLocal, User
 
 ALLOWED_MIME = {
