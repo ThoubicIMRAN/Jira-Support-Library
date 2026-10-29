@@ -83,6 +83,8 @@ def _csv_env(name: str, *, strip_at: bool = False) -> tuple[str, ...]:
 # App identity
 # --------------------------------------------------------------------------- #
 APP_NAME = "Jira Support Library"
+APP_VERSION = "2.2.0"
+APP_BUILD_LABEL = "2026-10-29 · Dashboard · Avatars · Multi-step Jira"
 
 _raw_root = os.getenv("APP_ROOT_PATH", "").strip().strip("/")
 APP_ROOT_PATH = _raw_root
@@ -128,6 +130,10 @@ APP_SECRET_KEY = _raw_secret
 
 ALLOW_DEFAULT_BOOTSTRAP_ADMIN = _bool_env(
     "ALLOW_DEFAULT_BOOTSTRAP_ADMIN", not IS_PRODUCTION
+)
+# Required by auth.py — do not remove
+BOOTSTRAP_ADMIN_USERNAME = (
+    os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin").strip() or "admin"
 )
 
 SESSION_TIMEOUT_MINUTES = _int_env("SESSION_TIMEOUT_MINUTES", 60, min_value=0)  # 0 = no idle timeout
@@ -221,6 +227,24 @@ def validate_production_settings() -> None:
         return
     if not APP_SECRET_KEY or APP_SECRET_KEY == "development-only-change-me":
         raise RuntimeError("APP_SECRET_KEY must be set explicitly in production.")
+    _fernet = os.getenv("FERNET_KEY", "").strip()
+    if not _fernet:
+        raise RuntimeError(
+            "FERNET_KEY must be set in production (encrypts Jira/SMTP secrets). "
+            "Generate: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    if APP_URL.startswith("http://") and "localhost" not in APP_URL:
+        warnings.warn(
+            "APP_URL is not HTTPS in production — session cookies may lack Secure flag.",
+            stacklevel=2,
+        )
+    if os.getenv("ALLOW_URL_SESSION", "").strip().lower() in ("1", "true", "yes"):
+        raise RuntimeError("ALLOW_URL_SESSION must be disabled in production.")
+    if os.getenv("ALLOW_SEED_DATA", "").strip().lower() in ("1", "true", "yes"):
+        warnings.warn("ALLOW_SEED_DATA is enabled in production — disable after bootstrap.", stacklevel=2)
+    _db = os.getenv("DATABASE_URL", "") or os.getenv("POSTGRES_PASSWORD", "")
+    if "StrongPassword123" in _db or "CHANGE_ME" in _db:
+        raise RuntimeError("Default/placeholder database password detected — set a strong POSTGRES_PASSWORD.")
 
 
 def log_config_summary() -> None:
@@ -270,7 +294,6 @@ CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "").strip()
 # --------------------------------------------------------------------------- #
 # Safety limits for Jira write operations
 # --------------------------------------------------------------------------- #
-BOOTSTRAP_ADMIN_USERNAME = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin").strip() or "admin"
 BULK_MAX_TICKETS = max(1, int(os.getenv("BULK_MAX_TICKETS", "25")))
 BULK_DELAY_SECONDS = max(0.0, float(os.getenv("BULK_DELAY_SECONDS", "0.3")))
 JIRA_MAX_ATTACHMENT_MB = max(1, int(os.getenv("JIRA_MAX_ATTACHMENT_MB", "10")))

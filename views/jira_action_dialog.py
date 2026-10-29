@@ -1,4 +1,4 @@
-"""Jira action dialog — compact tabs (Ticket | Comment | Post)."""
+"""Jira action dialog — single-screen compact layout + multi-step transitions."""
 from __future__ import annotations
 
 import re
@@ -440,6 +440,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             st.code(preview, language=None, wrap_lines=True)
             st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · [custom fields] above")
 
+    transition_chain = []
     with tab_a:
         t1, t2 = st.columns(2)
         time_raw = t1.text_input("Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time"))
@@ -450,15 +451,20 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             ) or []
         except Exception:
             pass
-        options = ["(none)"] + [(x.get("label") or x.get("name") or str(x.get("id"))) for x in transitions]
-        choice = t2.selectbox("Transition", options, key=_sk(response_id, "transition"))
-        transition_id = transition_label = None
-        if choice != "(none)":
-            for x in transitions:
-                lab = x.get("label") or x.get("name") or str(x.get("id"))
-                if lab == choice:
-                    transition_id, transition_label = x["id"], lab
-                    break
+        # Multi-step transitions: order of selection = execution order
+        label_to_id = {}
+        labels_ordered = []
+        for x in transitions:
+            lab = x.get("label") or x.get("name") or str(x.get("id"))
+            labels_ordered.append(lab)
+            label_to_id[lab] = str(x.get("id"))
+        selected_labels = t2.multiselect(
+            "Transitions (order = steps)",
+            labels_ordered,
+            key=_sk(response_id, "transitions_multi"),
+            help="Select one or more. Applied in list order before/with the comment.",
+        )
+        transition_chain = [(label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id]
 
         uploads = st.file_uploader(
             "Attachments",
@@ -528,7 +534,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             st.session_state.pop(_sk(response_id, "body_override"), None)
             st.toast("Cleared translation")
 
-    # ---- Post (always visible) ----
+        # ---- Post (always visible) ----
     if st.button("Post to Jira", type="primary", key=_sk(response_id, "post")):
         with st.spinner("Posting…"):
             results, errors = [], []
@@ -614,12 +620,22 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                     results.append(f"Time {spent}")
                 except Exception as exc:
                     errors.append(f"Worklog: {_msg(exc)}")
-            if transition_id:
+            if transition_chain:
                 try:
-                    jira_service.transition_issue(
-                        user.id, issue["key"], transition_id, label=transition_label
-                    )
-                    results.append(f"→ {transition_label}")
+                    if len(transition_chain) == 1:
+                        jira_service.transition_issue(
+                            user.id, issue["key"], transition_chain[0][0],
+                            label=transition_chain[0][1],
+                        )
+                        results.append(f"→ {transition_chain[0][1]}")
+                    else:
+                        applied = jira_service.multi_step_transition(
+                            user.id,
+                            issue["key"],
+                            [x[0] for x in transition_chain],
+                            labels=[x[1] for x in transition_chain],
+                        )
+                        results.append("→ " + " → ".join(applied))
                 except Exception as exc:
                     errors.append(f"Transition: {_msg(exc)}")
 

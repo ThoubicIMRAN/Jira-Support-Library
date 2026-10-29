@@ -1,4 +1,31 @@
+"""Input validators."""
+from __future__ import annotations
+
 import re
-def valid_hex_color(value): return bool(re.fullmatch(r'#[0-9a-fA-F]{6}',value or ''))
-def valid_password(value): return len(value or '')>=8
-def clean_key(value): return re.sub(r'[^A-Z0-9_-]+','_',value.upper().strip()).strip('_')
+
+_HEX = re.compile(r"^#?[0-9a-fA-F]{6}$")
+_PASSWORD = re.compile(
+    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,128}$"
+)
+
+
+def valid_password(value: str | None) -> bool:
+    """Enterprise baseline: 8–128 chars, upper, lower, digit."""
+    if not value or len(value) < 8 or len(value) > 128:
+        return False
+    return bool(_PASSWORD.match(value))
+
+
+def password_policy_message() -> str:
+    return (
+        "Password must be 8–128 characters and include at least one uppercase letter, "
+        "one lowercase letter, and one digit."
+    )
+
+
+def valid_hex_color(value: str | None) -> bool:
+    return bool(value and _HEX.match(value.strip()))
+
+
+def clean_key(value: str | None) -> str:
+    return (value or "").strip().upper().replace(" ", "")

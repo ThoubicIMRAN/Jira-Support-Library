@@ -8,6 +8,7 @@ import bcrypt
 from sqlalchemy import select
 from database import SessionLocal, User, AuditLog
 from services.security_policy import is_locked, record_attempt
+from services.rate_limit import limit_login, RateLimitExceeded
 from config import ALLOW_DEFAULT_BOOTSTRAP_ADMIN, APP_ENV, BOOTSTRAP_ADMIN_USERNAME
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,14 @@ def allowed(role, permission):
     )
 
 
-def authenticate(username, password):
-    identity = username.strip().lower()
+def authenticate(username, password, *, client_ip: str = ""):
+    identity = (username or "").strip().lower()
+    if not identity:
+        return None, "Invalid credentials or inactive account."
+    try:
+        limit_login(identity, client_ip or "")
+    except RateLimitExceeded as exc:
+        return None, f"Too many login attempts. Try again in about {exc.retry_after} seconds."
     if is_locked(identity):
         return None, "Account temporarily locked. Try again later."
     with SessionLocal() as db:
@@ -68,14 +75,7 @@ def authenticate(username, password):
 
 
 def ensure_superadmin():
-    """Create the bootstrap admin on first start.
-
-    - Password comes from BOOTSTRAP_ADMIN_PASSWORD. In production it is mandatory.
-    - In development, if unset, a random password is generated and written ONCE
-      to stderr (never to the structured log) so the developer can sign in.
-    - FORCE_RESET_ADMIN_PASSWORD is honoured only outside production, because
-      with the flag left on it would reset the admin password on every restart.
-    """
+    """Create the bootstrap admin on first start."""
     if APP_ENV == "production" and not ALLOW_DEFAULT_BOOTSTRAP_ADMIN:
         return
 
@@ -89,25 +89,43 @@ def ensure_superadmin():
             generated = False
             if not password:
                 if APP_ENV == "production":
-                    raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must be set to create the first admin in production.")
+                    raise RuntimeError(
+                        "BOOTSTRAP_ADMIN_PASSWORD must be set to create the first admin in production."
+                    )
                 password, generated = secrets.token_urlsafe(16), True
-            db.add(User(
-                username=BOOTSTRAP_ADMIN_USERNAME, email=None, full_name="System Administrator",
-                designation="Administrator", password_hash=hash_password(password),
-                role="superadmin", must_change_password=True, is_active=True,
-            ))
+            db.add(
+                User(
+                    username=BOOTSTRAP_ADMIN_USERNAME,
+                    email=None,
+                    full_name="System Administrator",
+                    designation="Administrator",
+                    password_hash=hash_password(password),
+                    role="superadmin",
+                    must_change_password=True,
+                    is_active=True,
+                )
+            )
             db.commit()
-            logger.info("Bootstrap superadmin '%s' created (must change password on first login)", BOOTSTRAP_ADMIN_USERNAME)
+            logger.info(
+                "Bootstrap superadmin %r created (must change password on first login)",
+                BOOTSTRAP_ADMIN_USERNAME,
+            )
             if generated:
-                sys.stderr.write(f"\n[dev] Bootstrap admin created. username={BOOTSTRAP_ADMIN_USERNAME} password={password}\n\n")
+                sys.stderr.write(
+                    f"\n[dev] Bootstrap admin created. username={BOOTSTRAP_ADMIN_USERNAME} password={password}\n\n"
+                )
             return
 
         if force_reset and password:
             if APP_ENV == "production":
-                logger.warning("FORCE_RESET_ADMIN_PASSWORD ignored in production; use scripts/reset_admin_password.py")
+                logger.warning(
+                    "FORCE_RESET_ADMIN_PASSWORD ignored in production; use scripts/reset_admin_password.py"
+                )
                 return
             admin.password_hash = hash_password(password)
             admin.must_change_password = True
             admin.is_active = True
             db.commit()
-            logger.warning("Admin password was reset from the environment. Set FORCE_RESET_ADMIN_PASSWORD=false.")
+            logger.warning(
+                "Admin password was reset from the environment. Set FORCE_RESET_ADMIN_PASSWORD=false."
+            )

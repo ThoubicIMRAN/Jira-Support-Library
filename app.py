@@ -1,7 +1,7 @@
 """Jira Support Library — application entry point.
 
 Responsibilities:
-  - one-time bootstrap (schema, bootstrap admin)
+  - one-time bootstrap (schema, bootstrap admin, seed data)
   - session validation and cookie restore
   - theme tokens (assets/styles.css + per-user preference tokens)
   - top bar, sidebar, page dispatch with RBAC guard and error boundary
@@ -26,19 +26,21 @@ from sqlalchemy import select  # noqa: E402
 from auth import allowed, ensure_superadmin  # noqa: E402
 from config import APP_NAME, HEALTH_TOKEN  # noqa: E402
 from database import Category, Project, SessionLocal, User, init_db  # noqa: E402
+from seed_data import seed_if_empty  # noqa: E402
 from services.cookie_service import delete_session_cookie, get_session_cookie  # noqa: E402
 from services.notification_service import unread_count  # noqa: E402
 from services.preference_service import DEFAULTS, get_preferences, preference_css, save_preferences  # noqa: E402
 from services.session_service import revoke_session, validate_session  # noqa: E402
 from utils.logging_config import configure_logging, new_correlation_id  # noqa: E402
 from utils.navigation import (  # noqa: E402
-    PAGE_ADMIN, PAGE_ADMIN_SETTINGS, PAGE_AI, PAGE_HEALTH, PAGE_HOME, PAGE_SUPPORT, PAGE_NOTIFICATIONS,
+    PAGE_ADMIN, PAGE_ADMIN_SETTINGS, PAGE_AI, PAGE_HEALTH, PAGE_HOME, PAGE_SUPPORT,
+    PAGE_NOTIFICATIONS, PAGE_DASHBOARD, PAGE_WHATS_NEW,
     PAGE_PROFILE, PAGE_PROJECT, PAGE_SECURITY_ADMIN, PAGE_SETTINGS, PAGE_WORKSPACE, goto,
 )
-from views import support  # noqa: F401 — used below
+from views import support  # noqa: F401
 from views import (  # noqa: E402
     admin_panel, admin_settings, ai_assistant, change_password, health, home, login,
-    notifications, profile, project_view, security_admin, settings, workspace,
+    my_dashboard, notifications, whats_new, profile, project_view, security_admin, settings, workspace,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,9 +49,6 @@ st.set_page_config(page_title=APP_NAME, page_icon="🎯", layout="wide")
 configure_logging()
 st.session_state.setdefault("correlation_id", new_correlation_id())
 
-# --------------------------------------------------------------------------- #
-# Routing tables
-# --------------------------------------------------------------------------- #
 PAGE_RENDERERS = {
     PAGE_HOME: home.render,
     PAGE_PROJECT: project_view.render,
@@ -62,6 +61,8 @@ PAGE_RENDERERS = {
     PAGE_AI: ai_assistant.render,
     PAGE_ADMIN_SETTINGS: admin_settings.render,
     PAGE_HEALTH: health.render,
+    PAGE_DASHBOARD: my_dashboard.render,
+    PAGE_WHATS_NEW: whats_new.render,
     PAGE_SUPPORT: support.render,
 }
 
@@ -76,11 +77,13 @@ BREADCRUMB_LABELS = {
     PAGE_AI: "AI Assistant",
     PAGE_ADMIN_SETTINGS: "Admin Settings",
     PAGE_HEALTH: "Health",
+    PAGE_DASHBOARD: "My Dashboard",
+    PAGE_WHATS_NEW: "What's New",
+    PAGE_SUPPORT: "Support",
 }
 
 
 def _can_open(role: str, page: str) -> bool:
-    """Server-side page authorisation (the UI also hides the entry points)."""
     if page in (PAGE_ADMIN, PAGE_ADMIN_SETTINGS):
         return allowed(role, "manage_content") or role in ("admin", "superadmin")
     if page == PAGE_SECURITY_ADMIN:
@@ -88,32 +91,23 @@ def _can_open(role: str, page: str) -> bool:
     return True
 
 
-# --------------------------------------------------------------------------- #
-# Theme
-# --------------------------------------------------------------------------- #
 STYLESHEET = APP_DIR / "assets" / "styles.css"
 
 
 def _inject_tokens(preferences) -> None:
-    """Per-user design tokens (injected after the static stylesheet)."""
     st.html(preference_css(preferences))
 
 
-# Static design system, once per run. st.html(Path) wraps the file in <style> and
-# routes it to the event container, so it takes no layout space. (The file must
-# not contain "<" — the HTML sanitiser would treat it as a tag and drop the sheet.)
 if STYLESHEET.exists():
     st.html(STYLESHEET)
-_inject_tokens(DEFAULTS)  # login screen / first paint use the prototype default
+_inject_tokens(DEFAULTS)
 
 
-# --------------------------------------------------------------------------- #
-# Bootstrap + health
-# --------------------------------------------------------------------------- #
 @st.cache_resource(show_spinner=False)
 def _bootstrap_once() -> bool:
     init_db()
     ensure_superadmin()
+    seed_if_empty()
     return True
 
 
@@ -129,10 +123,6 @@ if HEALTH_TOKEN and _health_param and hmac.compare_digest(str(_health_param), HE
     health.render()
     st.stop()
 
-
-# --------------------------------------------------------------------------- #
-# Session resolution
-# --------------------------------------------------------------------------- #
 st.session_state.setdefault("page", PAGE_HOME)
 
 
@@ -150,7 +140,6 @@ def _force_login(message: str) -> None:
 
 
 def _resolve_user() -> User | None:
-    """Return the authenticated user or None. Restores the session after reload."""
     if "session_token" not in st.session_state:
         cookie_token = get_session_cookie()
         if cookie_token:
@@ -188,9 +177,6 @@ st.session_state.user_preferences = preferences
 _inject_tokens(preferences)
 
 
-# --------------------------------------------------------------------------- #
-# Actions
-# --------------------------------------------------------------------------- #
 def _sign_out() -> None:
     revoke_session(st.session_state.get("session_token"))
     delete_session_cookie()
@@ -225,15 +211,12 @@ unread = _safe_unread()
 is_admin_area = allowed(user.role, "manage_content") or user.role in ("admin", "superadmin")
 
 
-# --------------------------------------------------------------------------- #
-# Top bar
-# --------------------------------------------------------------------------- #
 def _render_top_bar() -> None:
     with st.container(key="topbar"):
         left, centre, right = st.columns([2.2, 3.6, 2.4], gap="small", vertical_alignment="center")
         left.markdown(
             '<div class="jsl-brand"><div class="jsl-brand-logo">🎯</div>'
-            f'<div class="jsl-brand-name">{APP_NAME}<div class="jsl-brand-sub">IT Operations · Response Hub</div></div></div>',
+            f'<div class="jsl-brand-name">{APP_NAME}<div class="jsl-brand-sub">IT Operations · Enterprise Support Platform</div></div></div>',
             unsafe_allow_html=True,
         )
         with centre:
@@ -263,9 +246,6 @@ def _render_top_bar() -> None:
 _render_top_bar()
 
 
-# --------------------------------------------------------------------------- #
-# Sidebar
-# --------------------------------------------------------------------------- #
 def _nav_button(label: str, target: str, key: str, **goto_kwargs) -> None:
     active = page == target
     if st.button(label, key=key, width="stretch", type="primary" if active else "tertiary"):
@@ -302,14 +282,17 @@ def _render_sidebar() -> None:
     with st.sidebar:
         st.markdown(
             '<div class="jsl-sb-brand"><div class="jsl-brand-logo">🎯</div><div>'
-            f'<div class="jsl-sb-title">{APP_NAME}</div><div class="jsl-sb-sub">Response Hub</div></div></div>'
+            f'<div class="jsl-sb-title">{APP_NAME}</div><div class="jsl-sb-sub">Enterprise Support Platform</div></div></div>'
             f'<div class="jsl-sb-user"><b>{user.full_name}</b> · {user.role}</div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="jsl-sb-label">Library</div>', unsafe_allow_html=True)
+        st.markdown('<div class="jsl-sb-label">Command library (Jira)</div>', unsafe_allow_html=True)
         _nav_button("🏠  Home", PAGE_HOME, "nav_home", clear_project=True)
         _nav_button("⭐  My Workspace", PAGE_WORKSPACE, "nav_workspace")
+        _nav_button("📊  My Dashboard", PAGE_DASHBOARD, "nav_dashboard", clear_project=True)
+        _nav_button("✨  What's New", PAGE_WHATS_NEW, "nav_whats_new", clear_project=True)
         _nav_button("🤖  AI Assistant", PAGE_AI, "nav_ai")
+        st.markdown('<div class="jsl-sb-label">Workspace</div>', unsafe_allow_html=True)
         _nav_button("💬  Support", PAGE_SUPPORT, "nav_support")
         _nav_button(f"🔔  Notifications ({unread})" if unread else "🔔  Notifications", PAGE_NOTIFICATIONS, "nav_notifications")
 
@@ -326,7 +309,6 @@ def _render_sidebar() -> None:
                 _nav_button("🩺  Health", PAGE_HEALTH, "nav_health")
 
 
-# Global maintenance / announcement strip
 try:
     from services.comms_service import active_maintenance
     _m = active_maintenance()
@@ -337,10 +319,6 @@ except Exception:  # noqa: BLE001
 
 _render_sidebar()
 
-
-# --------------------------------------------------------------------------- #
-# Page dispatch (error boundary: never show a traceback to the user)
-# --------------------------------------------------------------------------- #
 try:
     PAGE_RENDERERS[page](user)
 except Exception:  # noqa: BLE001

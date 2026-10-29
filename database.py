@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, String, Text, Integer, Boolean, DateTime, ForeignKey, UniqueConstraint, event, Float
+from sqlalchemy import create_engine, String, Text, Integer, Boolean, DateTime, ForeignKey, UniqueConstraint, event, Float, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from config import DATABASE_URL
 
@@ -11,6 +11,7 @@ class User(Base):
     email:Mapped[str|None]=mapped_column(String(255),unique=True,nullable=True,index=True); full_name:Mapped[str]=mapped_column(String(180))
     designation:Mapped[str]=mapped_column(String(180),default='Support Engineer'); password_hash:Mapped[str|None]=mapped_column(String(255),nullable=True)
     role:Mapped[str]=mapped_column(String(30),default='user'); avatar_url:Mapped[str|None]=mapped_column(String(500),nullable=True)
+    avatar_mime:Mapped[str|None]=mapped_column(String(64),nullable=True); avatar_data:Mapped[bytes|None]=mapped_column(LargeBinary,nullable=True)
     is_active:Mapped[bool]=mapped_column(Boolean,default=True); must_change_password:Mapped[bool]=mapped_column(Boolean,default=False)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow); last_login:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
     designations:Mapped[list['UserProjectDesignation']]=relationship(back_populates='user',cascade='all, delete-orphan')
@@ -383,6 +384,33 @@ class CompanySettings(Base):
     website: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+def ensure_schema_patches() -> None:
+    """Add columns introduced after initial deploy (Postgres / SQLite safe-ish)."""
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    dialect = engine.dialect.name
+    stmts = []
+    if "avatar_mime" not in cols:
+        stmts.append("ALTER TABLE users ADD COLUMN avatar_mime VARCHAR(64)")
+    if "avatar_data" not in cols:
+        if dialect == "postgresql":
+            stmts.append("ALTER TABLE users ADD COLUMN avatar_data BYTEA")
+        else:
+            stmts.append("ALTER TABLE users ADD COLUMN avatar_data BLOB")
+    if not stmts:
+        return
+    with engine.begin() as conn:
+        for s in stmts:
+            try:
+                conn.execute(text(s))
+            except Exception:
+                pass  # concurrent / already exists
+
+
 def init_db():
-    """Create all tables (safe to call repeatedly)."""
+    """Create all tables (safe to call repeatedly) and apply light schema patches."""
     Base.metadata.create_all(engine)
+    ensure_schema_patches()
