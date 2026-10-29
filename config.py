@@ -131,6 +131,10 @@ APP_SECRET_KEY = _raw_secret
 ALLOW_DEFAULT_BOOTSTRAP_ADMIN = _bool_env(
     "ALLOW_DEFAULT_BOOTSTRAP_ADMIN", not IS_PRODUCTION
 )
+# Required by auth.py — do not remove
+BOOTSTRAP_ADMIN_USERNAME = (
+    os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin").strip() or "admin"
+)
 
 SESSION_TIMEOUT_MINUTES = _int_env("SESSION_TIMEOUT_MINUTES", 60, min_value=0)  # 0 = no idle timeout
 SESSION_ABSOLUTE_HOURS = _int_env("SESSION_ABSOLUTE_HOURS", 12, min_value=1)
