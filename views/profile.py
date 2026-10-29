@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from config import APP_NAME, APP_VERSION
+
 from components.cards import page_header
 from sqlalchemy import select
 
@@ -169,6 +171,64 @@ def _set_flash(message: str) -> None:
 # Profile form
 # --------------------------------------------------------------------------- #
 def render_profile_form(user) -> None:
+    import streamlit as st
+    from services.avatar_service import (
+        set_avatar, clear_avatar, render_avatar_image, get_avatar, AvatarError, MAX_BYTES,
+    )
+    from database import SessionLocal, User as _User
+
+    # Always re-read avatar from DB (session user object can be stale)
+    fresh = None
+    try:
+        with SessionLocal() as db:
+            fresh = db.get(_User, user.id)
+    except Exception:
+        fresh = user
+    display_user = fresh or user
+
+    st.subheader("Profile photo")
+    st.caption(f"PNG, JPEG or WebP · max {MAX_BYTES // 1024} KB · stored securely in the database")
+    c_av1, c_av2 = st.columns([1, 3])
+    with c_av1:
+        render_avatar_image(display_user, width=96)
+        if get_avatar(user.id):
+            st.caption("Photo on file")
+        else:
+            st.caption("No photo yet")
+    with c_av2:
+        up = st.file_uploader(
+            "Choose image",
+            type=["png", "jpg", "jpeg", "webp"],
+            key=f"avatar_up_{user.id}",
+            label_visibility="collapsed",
+        )
+        b1, b2 = st.columns(2)
+        if b1.button("Save photo", type="primary", key=f"avatar_save_{user.id}"):
+            if not up:
+                st.warning("Choose an image first.")
+            else:
+                try:
+                    raw = up.getvalue()
+                    mime = (up.type or "").strip() or "image/png"
+                    if up.name and up.name.lower().endswith(".jpg"):
+                        mime = mime or "image/jpeg"
+                    set_avatar(user.id, raw, mime)
+                    st.session_state[SESSION_FLASH] = "Profile photo updated."
+                    st.rerun()
+                except AvatarError as exc:
+                    st.error(str(exc))
+                except Exception as exc:
+                    # Surface DB/schema errors so ops can migrate
+                    st.error(f"Could not save photo: {exc}")
+        if b2.button("Remove photo", key=f"avatar_clr_{user.id}"):
+            try:
+                clear_avatar(user.id)
+                st.session_state[SESSION_FLASH] = "Profile photo removed."
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not remove photo: {exc}")
+    st.divider()
+
     projects, overrides = _load_projects_and_overrides(user.id)
 
     with st.form("profile_form", clear_on_submit=False):
@@ -344,6 +404,7 @@ def render_linked_identities(user) -> None:
 # --------------------------------------------------------------------------- #
 def render(user) -> None:
     page_header("👤 My Profile")
+    st.caption(f"{APP_NAME} · v{APP_VERSION}")
 
     _render_flash()
 
