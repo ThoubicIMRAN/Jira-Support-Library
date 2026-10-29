@@ -256,7 +256,7 @@ def render(user, *, embedded: bool = False):
                                         st.rerun()
                                     except ValueError as exc:
                                         st.error(str(exc))
-                            from services.avatar_service import set_avatar, clear_avatar, render_avatar_image, AvatarError, MAX_BYTES
+                            from services.avatar_service import set_avatar, render_avatar_image, AvatarError
                             render_avatar_image(account, width=48)
                             aup = st.file_uploader(
                                 "Set avatar", type=["png", "jpg", "jpeg", "webp"],

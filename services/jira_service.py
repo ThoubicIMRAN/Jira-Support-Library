@@ -613,7 +613,7 @@ def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
 def aggregate_queue_dashboard(issues: list[dict]) -> dict:
     """Build project×status counts and due-date buckets for charts."""
     from collections import defaultdict
-    from datetime import date, datetime, timedelta
+    from datetime import date, timedelta
 
     today = date.today()
     by_project_status: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))

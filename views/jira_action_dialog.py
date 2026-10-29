@@ -465,8 +465,6 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             help="Select one or more. Applied in list order before/with the comment.",
         )
         transition_chain = [(label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id]
-        transition_id = transition_chain[0][0] if len(transition_chain) == 1 else None
-        transition_label = transition_chain[0][1] if len(transition_chain) == 1 else None
 
         uploads = st.file_uploader(
             "Attachments",
