@@ -274,3 +274,65 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         ))
         db.delete(target)
         db.commit()
+
+
+def admin_update_user(
+    actor_id: int,
+    target_id: int,
+    *,
+    full_name: str | None = None,
+    email: str | None = None,
+    designation: str | None = None,
+    role: str | None = None,
+    is_active: bool | None = None,
+) -> None:
+    """Admin/superadmin updates profile fields for another user (RBAC enforced by caller)."""
+    ROLES = {"user", "manager", "admin", "superadmin"}
+    with SessionLocal() as db:
+        actor = db.get(User, actor_id)
+        target = db.get(User, target_id)
+        if not actor or not target:
+            raise ValueError("User not found.")
+        if target_id == actor_id and role is not None and role != target.role:
+            raise ValueError("You cannot change your own role here.")
+        if full_name is not None:
+            full_name = full_name.strip()
+            if not full_name:
+                raise ValueError("Full name is required.")
+            target.full_name = full_name
+        if email is not None:
+            email = email.strip().lower() or None
+            if email:
+                other = db.scalar(select(User).where(User.email == email, User.id != target_id))
+                if other:
+                    raise ValueError("That email is already in use.")
+            target.email = email
+        if designation is not None:
+            target.designation = (designation.strip() or "Support Engineer")[:180]
+        if role is not None:
+            if role not in ROLES:
+                raise ValueError("Invalid role.")
+            if actor.role != "superadmin" and role in ("admin", "superadmin"):
+                raise ValueError("Only a superadmin can assign privileged roles.")
+            if target.role == "superadmin" and role != "superadmin":
+                from sqlalchemy import func
+                n = db.scalar(
+                    select(func.count()).select_from(User).where(
+                        User.role == "superadmin", User.is_active == True  # noqa: E712
+                    )
+                ) or 0
+                if n <= 1:
+                    raise ValueError("Cannot demote the last active superadmin.")
+            target.role = role
+        if is_active is not None:
+            if target_id == actor_id and not is_active:
+                raise ValueError("You cannot deactivate your own account.")
+            target.is_active = bool(is_active)
+        db.add(AuditLog(
+            user_id=actor_id,
+            action="admin_update_user",
+            entity_type="user",
+            entity_id=str(target_id),
+            details=target.username,
+        ))
+        db.commit()

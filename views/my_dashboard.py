@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 
 import streamlit as st
 import pandas as pd
@@ -59,6 +60,7 @@ def render(user) -> None:
         flat = dash.get("flat_project_status") or []
         if flat:
             df = pd.DataFrame(flat)
+            # pivot: index=project, columns=status, values=count
             pivot = df.pivot_table(
                 index="project", columns="status", values="count", aggfunc="sum", fill_value=0
             )

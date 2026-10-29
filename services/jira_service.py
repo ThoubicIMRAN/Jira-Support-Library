@@ -535,3 +535,130 @@ def add_watchers(user_id: int, issue_key: str, identities: list[str]) -> list[st
 def search_jira_users(user_id: int, query: str) -> list[dict]:
     client = get_client_for_user(user_id)
     return client.search_users(query)
+
+
+def multi_step_transition(
+    user_id: int,
+    issue_key: str,
+    transition_ids: list[str],
+    *,
+    labels: list[str] | None = None,
+) -> list[str]:
+    """Run sequential Jira transitions; returns list of applied labels/ids.
+
+    Each step uses the issue's current available transitions. If an id is no
+    longer available mid-chain, raises JiraError after applying prior steps.
+    """
+    if not transition_ids:
+        return []
+    labels = labels or []
+    applied: list[str] = []
+    client = get_client_for_user(user_id)
+    for i, tid in enumerate(transition_ids):
+        tid = str(tid).strip()
+        if not tid:
+            continue
+        available = {str(t.get("id")): t for t in client.list_transitions(issue_key)}
+        if tid not in available:
+            raise JiraError(
+                f"Transition {tid} not available after step {i} "
+                f"(applied so far: {', '.join(applied) or 'none'})."
+            )
+        client.do_transition(issue_key, tid)
+        lab = labels[i] if i < len(labels) else (available[tid].get("name") or tid)
+        applied.append(str(lab))
+        _audit(user_id, "jira_transition", issue_key, f"step={i+1}:{lab}")
+    return applied
+
+
+MY_QUEUE_FIELDS = (
+    "summary,status,issuetype,project,assignee,reporter,duedate,priority,updated,created"
+)
+MY_QUEUE_JQL = (
+    "assignee = currentUser() AND resolution = Unresolved "
+    "ORDER BY duedate ASC, updated DESC"
+)
+
+
+def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
+    """Open issues assigned to the connected Jira user (all projects)."""
+    client = get_client_for_user(user_id)
+    raw = client.search_issues(
+        MY_QUEUE_JQL,
+        max_results=max_results,
+        fields=MY_QUEUE_FIELDS,
+    )
+    out: list[dict] = []
+    for issue in raw or []:
+        fields = issue.get("fields") or {}
+        project = fields.get("project") or {}
+        status = fields.get("status") or {}
+        itype = fields.get("issuetype") or {}
+        assignee = fields.get("assignee") or {}
+        out.append({
+            "key": issue.get("key") or "",
+            "summary": fields.get("summary") or "",
+            "status": status.get("name") or "",
+            "issuetype": itype.get("name") or "Unknown",
+            "project_key": project.get("key") or (issue.get("key") or "").split("-")[0],
+            "project_name": project.get("name") or project.get("key") or "",
+            "assignee": assignee.get("displayName") or assignee.get("name") or "",
+            "duedate": fields.get("duedate") or None,
+            "priority": (fields.get("priority") or {}).get("name") or "",
+            "updated": fields.get("updated") or "",
+        })
+    return out
+
+
+def aggregate_queue_dashboard(issues: list[dict]) -> dict:
+    """Build project×status counts and due-date buckets for charts."""
+    from collections import defaultdict
+    from datetime import date, datetime, timedelta
+
+    today = date.today()
+    by_project_status: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    due_buckets = {"Overdue": 0, "Due today": 0, "Next 7 days": 0, "Later": 0, "No due date": 0}
+
+    for it in issues:
+        pk = it.get("project_key") or "?"
+        st_name = it.get("status") or "Unknown"
+        by_project_status[pk][st_name] += 1
+        raw = it.get("duedate")
+        if not raw:
+            due_buckets["No due date"] += 1
+            continue
+        try:
+            d = date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            due_buckets["No due date"] += 1
+            continue
+        if d < today:
+            due_buckets["Overdue"] += 1
+        elif d == today:
+            due_buckets["Due today"] += 1
+        elif d <= today + timedelta(days=7):
+            due_buckets["Next 7 days"] += 1
+        else:
+            due_buckets["Later"] += 1
+
+    # Flatten for st.bar_chart: rows of {project, status, count}
+    flat = []
+    for proj, statuses in sorted(by_project_status.items()):
+        for status, count in sorted(statuses.items()):
+            flat.append({"project": proj, "status": status, "count": count})
+
+    return {
+        "by_project_status": {k: dict(v) for k, v in by_project_status.items()},
+        "flat_project_status": flat,
+        "due_buckets": due_buckets,
+        "total": len(issues),
+    }
+
+
+def group_queue_by_project_type(issues: list[dict]) -> dict[str, dict[str, list]]:
+    """project_key -> issuetype -> [issues]."""
+    from collections import defaultdict
+    tree: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for it in issues:
+        tree[it.get("project_key") or "?"][it.get("issuetype") or "Unknown"].append(it)
+    return {p: dict(types) for p, types in sorted(tree.items())}

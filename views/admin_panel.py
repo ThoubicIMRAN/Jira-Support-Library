@@ -5,7 +5,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, Project, Category, User, AuditLog, Response, ResponseTag, ResponseTagLink
 from auth import allowed, hash_password
-from services.account_service import admin_set_password, delete_user, unlock_login
+from services.account_service import admin_set_password, admin_update_user, delete_user, unlock_login
 from config import ROLES
 from utils.validators import valid_hex_color, clean_key, valid_password
 from services.content_service import move_project, move_category
@@ -55,7 +55,29 @@ def rename_category(user_id, category_id):
 
 
 @st.dialog('Delete category')
+def update_category(user_id, category_id, *, name: str | None = None, parent_id=None, sort_order: int | None = None, clear_parent: bool = False):
+    with SessionLocal() as db:
+        row = db.get(Category, category_id)
+        if not row:
+            return
+        if name is not None and name.strip():
+            row.name = name.strip()
+        if clear_parent:
+            row.parent_id = None
+        elif parent_id is not None:
+            if int(parent_id) == int(category_id):
+                st.error("Category cannot be its own parent.")
+                return
+            row.parent_id = int(parent_id) if parent_id else None
+        if sort_order is not None:
+            row.sort_order = int(sort_order)
+        log(db, user_id, 'update', 'category', row.id, row.name)
+        db.commit()
+        st.rerun()
+
+
 def delete_category(user_id, category_id):
+
     with SessionLocal() as db:
         row = db.get(Category, category_id)
         count = len(row.responses)
@@ -121,6 +143,28 @@ def render(user, *, embedded: bool = False):
                     if cols[2].button('↓', key=f'category_down_{category.id}', disabled=index == len(categories)-1): move_category(category.id, 1, user.id); st.rerun()
                     if cols[3].button('✏️', key=f'category_edit_{category.id}'): rename_category(user.id, category.id)
                     if cols[4].button('🗑️', key=f'category_delete_{category.id}'): delete_category(user.id, category.id)
+                    with st.expander(f"Edit · {category.name}", expanded=False):
+                        with st.form(f"cat_edit_{category.id}"):
+                            nn = st.text_input("Name", value=category.name)
+                            so = st.number_input("Sort order", value=int(getattr(category, "sort_order", 0) or 0), step=1)
+                            parents = [c for c in categories if c.id != category.id and not getattr(c, "parent_id", None)]
+                            pmap = {0: "(top-level)"} | {c.id: c.name for c in parents}
+                            cur_p = int(getattr(category, "parent_id", None) or 0)
+                            if cur_p not in pmap:
+                                cur_p = 0
+                            pid = st.selectbox(
+                                "Parent category",
+                                list(pmap.keys()),
+                                index=list(pmap.keys()).index(cur_p) if cur_p in pmap else 0,
+                                format_func=lambda i: pmap[i],
+                            )
+                            if st.form_submit_button("Save category"):
+                                update_category(
+                                    user.id, category.id,
+                                    name=nn, parent_id=pid or None,
+                                    sort_order=int(so), clear_parent=(pid == 0),
+                                )
+
     with user_tab:
         st.markdown("##### User management")
         st.caption("Superadmin can create users, change roles, reset passwords, and delete accounts.")
@@ -185,12 +229,46 @@ def render(user, *, embedded: bool = False):
                         key=f'active_{account.id}',
                         disabled=not can_manage,
                     )
-                    if top[3].button('Save', key=f'user_save_{account.id}', disabled=not can_manage, width='stretch'):
-                        account.role = new_role
-                        account.is_active = active
-                        db.commit()
-                        st.toast('User updated.')
-                        st.rerun()
+                    if top[3].button('Save role', key=f'user_save_{account.id}', disabled=not can_manage, width='stretch'):
+                        try:
+                            admin_update_user(
+                                user.id, account.id,
+                                role=new_role, is_active=active,
+                            )
+                            st.toast('User updated.')
+                            st.rerun()
+                        except ValueError as exc:
+                            st.error(str(exc))
+
+                    if can_manage:
+                        with st.expander(f"Edit profile · {account.username}", expanded=False):
+                            with st.form(f"edit_user_{account.id}"):
+                                en = st.text_input("Full name", value=account.full_name or "")
+                                em = st.text_input("Email", value=account.email or "")
+                                ed = st.text_input("Designation", value=account.designation or "")
+                                if st.form_submit_button("Save profile", type="primary"):
+                                    try:
+                                        admin_update_user(
+                                            user.id, account.id,
+                                            full_name=en, email=em, designation=ed,
+                                        )
+                                        st.success("Profile saved.")
+                                        st.rerun()
+                                    except ValueError as exc:
+                                        st.error(str(exc))
+                            from services.avatar_service import set_avatar, clear_avatar, render_avatar_image, AvatarError, MAX_BYTES
+                            render_avatar_image(account, width=48)
+                            aup = st.file_uploader(
+                                "Set avatar", type=["png", "jpg", "jpeg", "webp"],
+                                key=f"adm_av_{account.id}",
+                            )
+                            if st.button("Save avatar", key=f"adm_av_save_{account.id}") and aup:
+                                try:
+                                    set_avatar(account.id, aup.getvalue(), aup.type or "image/png")
+                                    st.success("Avatar updated.")
+                                    st.rerun()
+                                except AvatarError as exc:
+                                    st.error(str(exc))
 
                     if can_manage:
                         locked = False
