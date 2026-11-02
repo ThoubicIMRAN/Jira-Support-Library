@@ -1,4 +1,4 @@
-"""Admin: map app projects → Jira keys, manage transition friendly labels."""
+"""Admin: map app projects → Jira keys, transition labels, multi-step chains."""
 from __future__ import annotations
 
 import logging
@@ -25,7 +25,9 @@ def render_jira_admin(user) -> None:
         f"Site: `{JIRA_BASE_URL or '(not set)'}` · Product: **{JIRA_PRODUCT}**"
     )
 
-    tab_map, tab_alias = st.tabs(["Project → Jira key", "Transition labels"])
+    tab_map, tab_alias, tab_chain = st.tabs(
+        ["Project → Jira key", "Transition labels", "Transition chains"]
+    )
 
     with tab_map:
         st.markdown("Link each **library project** to a **Jira project key**.")
@@ -91,6 +93,49 @@ def render_jira_admin(user) -> None:
                         sort_order=int(sort_order),
                     )
                     st.success("Alias saved.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+
+    with tab_chain:
+        st.markdown(
+            "Named **multi-step** transition presets. Agents pick a chain in the Jira dialog "
+            "to pre-select the step order. Steps use **raw** Jira transition names."
+        )
+        chains = jira_service.list_transition_chains()
+        if chains:
+            for ch in chains:
+                steps = ch.get("steps") or []
+                c1, c2, c3 = st.columns([2, 5, 1])
+                c1.caption(ch["jira_project_key"])
+                c2.write(f"**{ch['name']}** · " + " → ".join(steps))
+                if c3.button("🗑", key=f"jira_chain_del_{ch['id']}", help="Delete"):
+                    jira_service.delete_transition_chain(ch["id"])
+                    st.rerun()
+        else:
+            st.caption("No chains yet.")
+
+        st.markdown("---")
+        st.markdown("**Add chain**")
+        with st.form("jira_chain_form"):
+            f1, f2 = st.columns(2)
+            pk = f1.text_input("Jira project key", value="*", help="* = all projects")
+            name = f2.text_input("Chain name", placeholder="Resolve & Close")
+            steps_raw = st.text_input(
+                "Steps (comma-separated raw names)",
+                placeholder="Start Progress, Resolve Issue",
+            )
+            sort_order = st.number_input("Sort order", min_value=0, value=0, step=1, key="ja_chain_ord")
+            if st.form_submit_button("Add chain", type="primary"):
+                try:
+                    steps = [s.strip() for s in (steps_raw or "").split(",") if s.strip()]
+                    jira_service.upsert_transition_chain(
+                        jira_project_key=pk,
+                        name=name,
+                        steps=steps,
+                        sort_order=int(sort_order),
+                    )
+                    st.success("Chain saved.")
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
