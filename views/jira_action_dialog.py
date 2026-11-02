@@ -89,7 +89,12 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         + (f" · only **{required}-***" if required else " · ⚠️ no Jira link")
     )
 
-    remembered = st.session_state.get(f"jira_last_ticket_{project_id or 'global'}", "")
+    remembered = (
+        st.session_state.pop("mq_prefill_ticket", None)
+        or st.session_state.get(f"jira_last_ticket_{project_id or 'global'}", "")
+        or st.session_state.get("jira_last_ticket_global", "")
+        or ""
+    )
     issue_store = _sk(response_id, "issue")
 
     # ---- Compact ticket bar ----
@@ -168,7 +173,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 if ad.get("username") and not st.session_state.get(_sk(response_id, "mention_user")):
                     st.session_state[_sk(response_id, "pending_mention_user")] = ad["username"]
     except Exception:
-        pass
+        logger.debug("AD enrich skipped", exc_info=True)
 
     if project_id:
         try:

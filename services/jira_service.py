@@ -492,27 +492,54 @@ def find_similar_open_issues(user_id: int, issue: dict, *, limit: int = 5) -> li
 
 
 def suggest_library_for_issue(user_id: int, project_id: int, issue: dict) -> list[dict]:
-    """Smart suggestions: semantic match library responses to ticket summary/description."""
-    from services import ai_service
+    """Smart suggestions: top semantic matches, boosted by votes."""
+    from services.similarity_search import find_top_matches
 
-    text = f"{issue.get('summary') or ''}\n{issue.get('status') or ''}"
+    text = (issue.get("summary") or "") + chr(10) + (issue.get("status") or "")
     if not text.strip():
         return []
     try:
-        hit, score = ai_service.find_best_match(project_id, text, threshold=0.5)
+        hits = find_top_matches(project_id, text, limit=5, threshold=0.45)
     except Exception:
+        logger.exception("suggest_library_for_issue failed")
         return []
-    if not hit:
+    if not hits:
         return []
-    # Also try a slightly lower bar for top few — find_best_match returns one; expand later
-    return [
-        {
-            "id": hit.id,
-            "title": hit.title,
-            "body": hit.response_body,
+
+    boost: dict[str, float] = {}
+    try:
+        from database import AuditLog, SessionLocal
+        from sqlalchemy import select
+
+        ids = [h["id"] for h in hits]
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "response",
+                    AuditLog.entity_id.in_(ids),
+                    AuditLog.action.in_(("suggestion_up", "suggestion_down")),
+                ).limit(500)
+            ).all()
+            for row in rows:
+                rid = row.entity_id or ""
+                if row.action == "suggestion_up":
+                    boost[rid] = boost.get(rid, 0.0) + 0.03
+                elif row.action == "suggestion_down":
+                    boost[rid] = boost.get(rid, 0.0) - 0.04
+    except Exception:
+        logger.debug("vote boost skipped", exc_info=True)
+
+    ranked = []
+    for h in hits:
+        score = float(h.get("score") or 0) + boost.get(str(h["id"]), 0.0)
+        ranked.append({
+            "id": h["id"],
+            "title": h["title"],
+            "body": h["body"],
             "score": score,
-        }
-    ]
+        })
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return ranked[:3]
 
 
 
@@ -606,6 +633,7 @@ def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
             "duedate": fields.get("duedate") or None,
             "priority": (fields.get("priority") or {}).get("name") or "",
             "updated": fields.get("updated") or "",
+            "created": fields.get("created") or "",
         })
     return out
 

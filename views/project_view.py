@@ -21,7 +21,7 @@ from components.cards import (
 )
 from database import Category, Project, SessionLocal
 from services.content_service import (
-    ContentError, create_response, delete_response, duplicate_response,
+    ContentError, create_response, delete_response, duplicate_response, find_near_duplicates,
     export_project_payload, import_project_payload, update_response,
 )
 from services.workspace_service import designation_overrides, favorite_ids, toggle_favorite
@@ -140,18 +140,30 @@ def add_response_dialog(user_id: int, role: str, project_id: int) -> None:
             height=260,
             help=PLACEHOLDER_HELP,
         )
+        force_similar = st.checkbox(
+            "Save even if a similar response already exists",
+            value=False,
+            key="add_resp_force_similar",
+        )
         submitted = st.form_submit_button("Save response", type="primary", width="stretch")
     if submitted:
         try:
             body = ensure_signature_placeholders(body or "")
-            create_response(user_id, role, names[cat_name], title, badge, preview, body)
+            near = find_near_duplicates(project_id, body, threshold=0.85, limit=3)
+            if near and not force_similar:
+                titles = ", ".join(f"{h['title'][:40]} ({h['score']:.0%})" for h in near)
+                st.warning(
+                    f"Similar response(s) found (≥85%): {titles}. "
+                    "Tick **Save even if similar…** to store anyway."
+                )
+            else:
+                create_response(user_id, role, names[cat_name], title, badge, preview, body)
+                flash("Response added.")
+                st.rerun()
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, ContentError):
                 logger.exception("Add response failed")
             _save_error(exc)
-        else:
-            flash("Response added.")
-            st.rerun()
 
 
 @st.dialog("Edit response", width="large")
