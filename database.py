@@ -279,6 +279,18 @@ class JiraTransitionAlias(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class JiraTransitionChain(Base):
+    """Named multi-step transition presets (project key or *)."""
+    __tablename__ = 'jira_transition_chains'
+    __table_args__ = (UniqueConstraint('jira_project_key', 'name'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    jira_project_key: Mapped[str] = mapped_column(String(40), default='*', index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    steps_json: Mapped[str] = mapped_column(Text, default='[]')
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 # --- AI approval workflow ---
 class AiPendingResponse(Base):
     """AI-generated text waiting for manager/admin approval before library save."""
