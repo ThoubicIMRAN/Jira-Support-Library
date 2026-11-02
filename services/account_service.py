@@ -11,6 +11,30 @@ from utils.security import token_urlsafe, token_hash
 def utcnow(): return datetime.now(timezone.utc)
 
 
+def revoke_user_sessions(user_id: int) -> int:
+    """Invalidate all server-side sessions for user_id. Returns rows deleted."""
+    from sqlalchemy import delete as sa_delete
+    try:
+        from database import AppSession
+    except Exception:
+        return 0
+    with SessionLocal() as db:
+        result = db.execute(sa_delete(AppSession).where(AppSession.user_id == user_id))
+        db.commit()
+        return result.rowcount or 0
+
+
+def _require_admin(actor_id: int) -> User:
+    with SessionLocal() as db:
+        actor = db.get(User, actor_id)
+        if not actor or not actor.is_active:
+            raise ValueError("Actor not found.")
+        if actor.role not in ("admin", "superadmin"):
+            raise ValueError("Admin privileges required.")
+        db.expunge(actor)
+        return actor
+
+
 def request_password_reset(email):
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.email == email.strip().lower(), User.is_active == True))
@@ -33,15 +57,21 @@ def validate_reset_token(raw):
 
 
 def consume_reset_token(raw, password):
+    from services.rate_limit import limit_password_change
     with SessionLocal() as db:
         row=db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash==token_hash(raw), PasswordResetToken.used_at.is_(None)))
         if not row or as_utc(row.expires_at) < utcnow(): return False
-        user=db.get(User,row.user_id); user.password_hash=hash_password(password); user.must_change_password=False; row.used_at=utcnow()
+        user=db.get(User,row.user_id)
+        limit_password_change(user.id)
+        user.password_hash=hash_password(password); user.must_change_password=False; row.used_at=utcnow()
         db.add(AuditLog(user_id=user.id,action='password_reset',entity_type='user',entity_id=str(user.id),details='self-service'))
-        db.commit(); return True
+        db.commit()
+    revoke_user_sessions(user.id)
+    return True
 
 
 def create_invitation(email, role, designation, invited_by):
+    _require_admin(invited_by)
     raw=token_urlsafe()
     with SessionLocal() as db:
         row=UserInvitation(email=email.strip().lower(),role=role,designation=designation.strip() or 'Support Engineer',token_hash=token_hash(raw),expires_at=utcnow()+timedelta(hours=INVITATION_TOKEN_HOURS),invited_by=invited_by)
@@ -104,16 +134,24 @@ def register_user(username, full_name, email, password, designation='Support Eng
 
 
 def admin_set_password(target_user_id: int, new_password: str, actor_id: int) -> None:
-    """Superadmin sets a temporary password; user must change on next login."""
+    """Admin/superadmin sets a temporary password; user must change on next login."""
     from utils.validators import valid_password
+    from services.rate_limit import limit_password_change
+
+    actor = _require_admin(actor_id)
+    if actor.role not in ("admin", "superadmin"):
+        raise ValueError("Admin privileges required.")
     if not valid_password(new_password or ""):
         raise ValueError("Password must be at least 8 characters.")
+    limit_password_change(actor_id)
     with SessionLocal() as db:
         target = db.get(User, target_user_id)
         if not target:
             raise ValueError("User not found.")
         if target.id == actor_id:
             raise ValueError("Use Change password for your own account.")
+        if target.role == "superadmin" and actor.role != "superadmin":
+            raise ValueError("Only a superadmin can reset a superadmin password.")
         target.password_hash = hash_password(new_password)
         target.must_change_password = True
         target.is_active = True
@@ -126,6 +164,7 @@ def admin_set_password(target_user_id: int, new_password: str, actor_id: int) ->
         ))
         db.commit()
     unlock_login(target.username)
+    revoke_user_sessions(target_user_id)
 
 
 def unlock_login(identity: str) -> int:
@@ -136,7 +175,6 @@ def unlock_login(identity: str) -> int:
     if not ident:
         return 0
     with SessionLocal() as db:
-        # Also try username as stored (case variants)
         result = db.execute(
             sa_delete(LoginAttempt).where(LoginAttempt.identity == ident)
         )
@@ -145,13 +183,7 @@ def unlock_login(identity: str) -> int:
 
 
 def delete_user(target_user_id: int, actor_id: int) -> None:
-    """Delete a user account while preserving audit history.
-
-    - AuditLog.user_id set to NULL (logs kept)
-    - Other nullable FKs nulled
-    - CASCADE children removed with the user
-    - User row deleted
-    """
+    """Delete a user account while preserving audit history. Requires admin/superadmin."""
     from sqlalchemy import delete as sa_delete, update as sa_update
     from database import (
         AuditLog,
@@ -174,6 +206,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         BulkPostLog,
     )
 
+    actor = _require_admin(actor_id)
     if target_user_id == actor_id:
         raise ValueError("You cannot delete your own account.")
 
@@ -181,8 +214,9 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         target = db.get(User, target_user_id)
         if not target:
             raise ValueError("User not found.")
+        if target.role == "superadmin" and actor.role != "superadmin":
+            raise ValueError("Only a superadmin can delete a superadmin.")
         if target.role == "superadmin":
-            # Prevent deleting the last superadmin
             from sqlalchemy import func
             n = db.scalar(
                 select(func.count()).select_from(User).where(
@@ -195,11 +229,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         username = target.username
         uid = target.id
 
-        # Preserve audit: null out actor references
-        db.execute(
-            sa_update(AuditLog).where(AuditLog.user_id == uid).values(user_id=None)
-        )
-        # Null other non-cascade FKs that block delete
+        db.execute(sa_update(AuditLog).where(AuditLog.user_id == uid).values(user_id=None))
         try:
             db.execute(
                 sa_update(UserInvitation)
@@ -235,7 +265,6 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         except Exception:
             pass
 
-        # Explicit cleanup of identity-related rows (CASCADE should handle, but be safe)
         for Model in (
             PasswordResetToken,
             UserAuthIdentity,
@@ -262,7 +291,6 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         except Exception:
             pass
 
-        # Login attempts by username
         db.execute(sa_delete(LoginAttempt).where(LoginAttempt.identity == username.lower()))
 
         db.add(AuditLog(
@@ -286,12 +314,14 @@ def admin_update_user(
     role: str | None = None,
     is_active: bool | None = None,
 ) -> None:
-    """Admin/superadmin updates profile fields for another user (RBAC enforced by caller)."""
+    """Admin/superadmin updates profile fields for another user."""
     ROLES = {"user", "manager", "admin", "superadmin"}
+    actor = _require_admin(actor_id)
+    role_changed = False
+    deactivated = False
     with SessionLocal() as db:
-        actor = db.get(User, actor_id)
         target = db.get(User, target_id)
-        if not actor or not target:
+        if not target:
             raise ValueError("User not found.")
         if target_id == actor_id and role is not None and role != target.role:
             raise ValueError("You cannot change your own role here.")
@@ -323,10 +353,14 @@ def admin_update_user(
                 ) or 0
                 if n <= 1:
                     raise ValueError("Cannot demote the last active superadmin.")
+            if role != target.role:
+                role_changed = True
             target.role = role
         if is_active is not None:
             if target_id == actor_id and not is_active:
                 raise ValueError("You cannot deactivate your own account.")
+            if target.is_active and not bool(is_active):
+                deactivated = True
             target.is_active = bool(is_active)
         db.add(AuditLog(
             user_id=actor_id,
@@ -336,3 +370,5 @@ def admin_update_user(
             details=target.username,
         ))
         db.commit()
+    if role_changed or deactivated:
+        revoke_user_sessions(target_id)
