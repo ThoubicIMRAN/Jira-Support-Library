@@ -241,7 +241,7 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
             for ci, category_data in enumerate(categories):
                 if not isinstance(category_data, dict):
                     raise ContentError(f"Category {ci + 1} is malformed.")
-                name = str(category_data.get("name", "")).strip()
+                name = str(category_data.get("name", "").strip())
                 if not name:
                     raise ContentError(f"Category {ci + 1} has no name.")
                 category = db.scalar(select(Category).where(Category.project_id == project_id, Category.name == name))
@@ -301,6 +301,10 @@ def list_category_tree(project_id: int) -> list[dict]:
 
 
 def create_category(user_id, role, project_id, name, parent_id=None):
+    """Create category or sub-category. Requires manage_content (or create)."""
+    # Prefer manage_content; fall back to create for roles that can author content
+    if not (allowed(role, "manage_content") or allowed(role, "create")):
+        raise ContentError("You do not have permission to do that.")
     name = (name or "").strip()
     if not name:
         raise ContentError("Category name is required.")
