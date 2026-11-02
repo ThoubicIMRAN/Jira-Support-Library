@@ -1,8 +1,8 @@
-"""Profile avatar storage (bytes in DB) with validation."""
+"""Profile avatar storage (bytes in DB) with validation and RBAC."""
 from __future__ import annotations
 
-
 from database import SessionLocal, User
+from services.rate_limit import limit_avatar_upload
 
 ALLOWED_MIME = {
     "image/png": ".png",
@@ -16,7 +16,19 @@ class AvatarError(ValueError):
     pass
 
 
-def set_avatar(user_id: int, data: bytes, mime: str) -> None:
+def set_avatar(
+    user_id: int,
+    data: bytes,
+    mime: str,
+    *,
+    actor_id: int | None = None,
+    actor_role: str | None = None,
+) -> None:
+    """Store avatar for user_id. Caller must be the same user or admin/superadmin."""
+    actor_id = actor_id if actor_id is not None else user_id
+    if actor_id != user_id and (actor_role or "") not in ("admin", "superadmin"):
+        raise AvatarError("You can only change your own profile photo.")
+    limit_avatar_upload(actor_id)
     mime = (mime or "").split(";")[0].strip().lower()
     if mime not in ALLOWED_MIME:
         raise AvatarError("Only PNG, JPEG, or WebP images are allowed.")
@@ -32,7 +44,15 @@ def set_avatar(user_id: int, data: bytes, mime: str) -> None:
         db.commit()
 
 
-def clear_avatar(user_id: int) -> None:
+def clear_avatar(
+    user_id: int,
+    *,
+    actor_id: int | None = None,
+    actor_role: str | None = None,
+) -> None:
+    actor_id = actor_id if actor_id is not None else user_id
+    if actor_id != user_id and (actor_role or "") not in ("admin", "superadmin"):
+        raise AvatarError("You can only change your own profile photo.")
     with SessionLocal() as db:
         user = db.get(User, user_id)
         if not user:

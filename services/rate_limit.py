@@ -40,7 +40,10 @@ def check_rate_limit(
         _prune(q, window_seconds, now)
         if len(q) >= max_calls:
             retry = int(max(1, window_seconds - (now - q[0])))
-            raise RateLimitExceeded(retry_after=retry)
+            raise RateLimitExceeded(
+                f"Too many attempts. Try again in about {retry}s.",
+                retry_after=retry,
+            )
         q.append(now)
 
 
@@ -65,3 +68,24 @@ def limit_password_reset(email_or_ip: str) -> None:
 
 def limit_sensitive_api(user_id: int, action: str = "api") -> None:
     check_rate_limit(f"{action}:uid:{user_id}", max_calls=120, window_seconds=60)
+
+
+def limit_jira_write(user_id: int) -> None:
+    """~30 Jira write operations per minute per user."""
+    check_rate_limit(f"jira_write:uid:{user_id}", max_calls=30, window_seconds=60)
+
+
+def limit_avatar_upload(user_id: int) -> None:
+    check_rate_limit(f"avatar:uid:{user_id}", max_calls=5, window_seconds=60)
+
+
+def limit_bulk_run(user_id: int) -> None:
+    check_rate_limit(f"bulk:uid:{user_id}", max_calls=5, window_seconds=300)
+
+
+def limit_password_change(user_id: int) -> None:
+    check_rate_limit(f"pwd_change:uid:{user_id}", max_calls=5, window_seconds=900)
+
+
+def limit_ai_call(user_id: int) -> None:
+    check_rate_limit(f"ai:uid:{user_id}", max_calls=30, window_seconds=60)

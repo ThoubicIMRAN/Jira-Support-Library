@@ -15,6 +15,14 @@ FIX_*/
 *.zip
 !requirements*.txt
 
+# Source-rewriting APPLY scripts (must never be committed)
+*_APPLY.py
+*APPLY*.py
+SYNC_LATEST_APPLY.py
+CI_FIX_DIALOG.py
+PHASE1_APPLY.py
+DIALOG_SAFETY_APPLY.py
+
 # IDE / OS
 .idea/
 .vscode/
