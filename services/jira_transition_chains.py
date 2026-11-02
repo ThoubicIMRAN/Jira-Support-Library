@@ -3,9 +3,27 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, mapped_column
 
-from database import SessionLocal, JiraTransitionChain
+import database as _db
+from database import Base, SessionLocal, utcnow
+
+if hasattr(_db, "JiraTransitionChain"):
+    JiraTransitionChain = _db.JiraTransitionChain
+else:
+
+    class JiraTransitionChain(Base):
+        """Named multi-step transition presets (project key or *)."""
+
+        __tablename__ = "jira_transition_chains"
+        __table_args__ = (UniqueConstraint("jira_project_key", "name"),)
+        id: Mapped[int] = mapped_column(primary_key=True)
+        jira_project_key: Mapped[str] = mapped_column(String(40), default="*", index=True)
+        name: Mapped[str] = mapped_column(String(120))
+        steps_json: Mapped[str] = mapped_column(Text, default="[]")
+        sort_order: Mapped[int] = mapped_column(Integer, default=0)
+        created_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 def list_transition_chains(jira_project_key: str | None = None) -> list[dict]:
@@ -94,8 +112,8 @@ def resolve_chain_to_labels(
     transitions = list_transitions_friendly(
         user_id, issue_key, jira_project_key=jira_project_key
     ) or []
-    by_raw = {}
-    by_label = {}
+    by_raw: dict[str, str] = {}
+    by_label: dict[str, str] = {}
     for t in transitions:
         name = (t.get("name") or "").strip()
         label = (t.get("label") or name).strip()

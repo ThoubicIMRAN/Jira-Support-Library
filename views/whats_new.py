@@ -1,4 +1,4 @@
-"""What\'s New — release notes for agents and admins."""
+"""What's New — release notes for agents and admins."""
 from __future__ import annotations
 
 import streamlit as st
@@ -8,6 +8,18 @@ from config import APP_NAME, APP_VERSION
 
 # Newest first
 RELEASES: list[dict] = [
+    {
+        "version": "2.3.0",
+        "date": "2026-11-02",
+        "title": "Security hardening, dialog UX, transition presets",
+        "items": [
+            "**Security (H1–H5)** — block APPLY scripts in CI; RBAC inside services; rate limits on Jira/bulk/AI/avatar; revoke sessions on password/role change; Docker binds app to localhost, Ollama internal-only",
+            "**Jira dialog Package 2** — single-screen layout (no tabs); people search with Wiki/+Watch; reporter/assignee chips; visibility + action plan + placeholder guard + double-post guard",
+            "**Transition chains Package 3** — admin-named multi-step presets; one-click fill on dialog; friendly labels still apply",
+            "**My Queue / dashboard** — SLA badges, charts, 🎫 pre-fill ticket into dialog",
+            "**Duplicates & suggestions** — semantic near-duplicates on save; ranked library suggestions on ticket load",
+        ],
+    },
     {
         "version": "2.2.0",
         "date": "2026-10-29",
@@ -38,7 +50,7 @@ RELEASES: list[dict] = [
 
 
 def render(user) -> None:
-    page_header("✨ What\'s New")
+    page_header("✨ What's New")
     st.caption(f"{APP_NAME} · current version **{APP_VERSION}**")
 
     for rel in RELEASES:

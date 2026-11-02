@@ -7,6 +7,7 @@ import streamlit as st
 
 from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_PRODUCT
 from services import jira_service
+from services import jira_transition_chains as jtc
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def render_jira_admin(user) -> None:
             "Named **multi-step** transition presets. Agents pick a chain in the Jira dialog "
             "to pre-select the step order. Steps use **raw** Jira transition names."
         )
-        chains = jira_service.list_transition_chains()
+        chains = jtc.list_transition_chains()
         if chains:
             for ch in chains:
                 steps = ch.get("steps") or []
@@ -110,7 +111,7 @@ def render_jira_admin(user) -> None:
                 c1.caption(ch["jira_project_key"])
                 c2.write(f"**{ch['name']}** · " + " → ".join(steps))
                 if c3.button("🗑", key=f"jira_chain_del_{ch['id']}", help="Delete"):
-                    jira_service.delete_transition_chain(ch["id"])
+                    jtc.delete_transition_chain(ch["id"])
                     st.rerun()
         else:
             st.caption("No chains yet.")
@@ -129,7 +130,7 @@ def render_jira_admin(user) -> None:
             if st.form_submit_button("Add chain", type="primary"):
                 try:
                     steps = [s.strip() for s in (steps_raw or "").split(",") if s.strip()]
-                    jira_service.upsert_transition_chain(
+                    jtc.upsert_transition_chain(
                         jira_project_key=pk,
                         name=name,
                         steps=steps,
