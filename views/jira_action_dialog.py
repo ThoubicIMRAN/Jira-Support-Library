@@ -1,4 +1,4 @@
-"""Jira action dialog — single-screen compact layout + multi-step transitions."""
+"""Jira action dialog — Package 2 single-screen layout + people pickers + safety."""
 from __future__ import annotations
 
 import re
@@ -74,49 +74,10 @@ def _clear(response_id: str, project_id) -> None:
 
 
 
-_PLACEHOLDER_RE = re.compile(
-    r"@TICKET\b|@SUMMARY\b|@ASSIGNEE\b|@PROJECT\b|@STATUS\b|\[[^\]\n]+\]"
-)
 
 
-def unresolved_placeholders(text: str) -> list[str]:
-    """Tokens that should be filled before post (leave @NAME/@DESIGNATION/@R to personalize)."""
-    skip = {"@NAME", "@DESIGNATION", "@R", "@ROLE", "@DATE"}
-    found = []
-    for m in _PLACEHOLDER_RE.finditer(text or ""):
-        tok = m.group(0)
-        if tok in skip:
-            continue
-        if tok.startswith("[") and tok.endswith("]"):
-            # empty bracket field values already applied; leftover means unfilled
-            pass
-        if tok not in found:
-            found.append(tok)
-    return found
 
 
-def action_plan_lines(
-    *,
-    issue_key: str,
-    internal: bool,
-    time_raw: str,
-    transition_labels: list[str],
-    files_n: int,
-    closing: bool,
-) -> list[str]:
-    plan = [
-        ("Internal comment" if internal else "Customer-visible comment")
-        + f" on **{issue_key}**"
-    ]
-    if transition_labels:
-        plan.append("Transition: " + " → ".join(transition_labels))
-    if (time_raw or "").strip():
-        plan.append(f"Log time: `{(time_raw or '').strip()}`")
-    if files_n:
-        plan.append(f"Attach {files_n} file(s)")
-    if closing:
-        plan.append("Includes resolution / closing notes")
-    return plan
 
 
 @st.dialog("Jira action", width="large")
@@ -253,239 +214,320 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
 
     body_template = st.session_state.get(_sk(response_id, "body_override")) or response_body
 
-    tab_c, tab_a, tab_m = st.tabs(["Comment", "Actions", "More"])
 
-    with tab_c:
-        g1, g2 = st.columns([2, 2])
-        mention_mode = g1.radio(
-            "Greeting",
-            ["plain", "wiki", "none"],
-            format_func=lambda x: {"plain": "Hello Name", "wiki": "Hello [~user]", "none": "Hello Customer"}[x],
-            horizontal=True,
-            key=_sk(response_id, "mention_mode"),
+    body_template = st.session_state.get(_sk(response_id, "body_override")) or response_body
+
+    # =====================================================================
+    # Package 2: single-screen layout (no tabs) + people pickers
+    # =====================================================================
+
+    # ---- Row: greeting + visibility ----
+    g1, g2, g3 = st.columns([2, 2, 2])
+    mention_mode = g1.radio(
+        "Greeting",
+        ["plain", "wiki", "none"],
+        format_func=lambda x: {"plain": "Hello Name", "wiki": "Hello [~user]", "none": "Hello Customer"}[x],
+        horizontal=True,
+        key=_sk(response_id, "mention_mode"),
+    )
+    _pm = _sk(response_id, "pending_mention_user")
+    if _pm in st.session_state:
+        st.session_state[_sk(response_id, "mention_user")] = st.session_state.pop(_pm)
+    mention_user = g2.text_input("Wiki user", key=_sk(response_id, "mention_user"))
+    visibility = g3.radio(
+        "Visibility",
+        ["customer", "internal"],
+        format_func=lambda x: "Customer" if x == "customer" else "Internal",
+        horizontal=True,
+        key=_sk(response_id, "visibility"),
+    )
+    internal = visibility == "internal"
+    if internal:
+        st.warning("**Internal only** — not shared with the customer.")
+    else:
+        st.error("**Visible to customer** — shared with the customer.")
+
+    # ---- People: quick chips + search picker ----
+    with st.expander("People (mentions & watchers)", expanded=True):
+        st.caption(
+            "Mention with Jira wiki `[~username]`. Selected people are also added as watchers on post."
         )
-        _pm = _sk(response_id, "pending_mention_user")
-        if _pm in st.session_state:
-            st.session_state[_sk(response_id, "mention_user")] = st.session_state.pop(_pm)
-        mention_user = g2.text_input("Wiki user", key=_sk(response_id, "mention_user"))
-        visibility = st.radio(
-            "Visibility",
-            ["customer", "internal"],
-            format_func=lambda x: "Share with customer" if x == "customer" else "Comment internally",
-            horizontal=True,
-            key=_sk(response_id, "visibility"),
+        # Quick chips from ticket
+        chip_cols = st.columns(4)
+        reporter_name = issue.get("reporter") or ""
+        reporter_id = issue.get("reporter_username") or ""
+        assignee_name = issue.get("assignee") or ""
+        assignee_id = issue.get("assignee_username") or ""
+        if chip_cols[0].button(
+            f"Reporter: {reporter_name[:18] or '—'}",
+            key=_sk(response_id, "chip_rep"),
+            disabled=not bool(reporter_id or reporter_name),
+            help="Set wiki user to reporter",
+        ):
+            st.session_state[_sk(response_id, "mention_user")] = reporter_id or reporter_name
+            st.toast("Reporter set as wiki user")
+        if chip_cols[1].button(
+            f"Assignee: {assignee_name[:18] or '—'}",
+            key=_sk(response_id, "chip_asg"),
+            disabled=not bool(assignee_id or assignee_name),
+            help="Mention + watch assignee",
+        ):
+            st.session_state[_sk(response_id, "mention_assignee")] = True
+            st.session_state[_sk(response_id, "watch_assignee")] = True
+            st.toast("Assignee will be mentioned & watched")
+        mention_assignee = chip_cols[2].checkbox(
+            "Mention assignee",
+            value=bool(st.session_state.get(_sk(response_id, "mention_assignee"))),
+            key=_sk(response_id, "mention_assignee"),
+            disabled=not bool(assignee_id or assignee_name),
         )
-        internal = visibility == "internal"
-        if internal:
-            st.warning("**Internal only** — this comment will not be shared with the customer.")
-        else:
-            st.error("**Visible to customer** — this comment will be shared with the customer.")
+        chip_cols[3].checkbox(
+            "Watch assignee",
+            value=bool(st.session_state.get(_sk(response_id, "watch_assignee"))),
+            key=_sk(response_id, "watch_assignee"),
+            disabled=not bool(assignee_id),
+        )
 
-
-        is_closing = st.checkbox("Closing / resolve", key=_sk(response_id, "closing"))
-        resolution_notes = ""
-        if is_closing:
-            # Apply pending values BEFORE widgets (Streamlit rule)
-            conf_key = _sk(response_id, "conf_url")
-            notes_key = _sk(response_id, "res_notes")
-            pending_conf = _sk(response_id, "pending_conf_url")
-            pending_notes = _sk(response_id, "pending_res_notes")
-            if pending_conf in st.session_state:
-                st.session_state[conf_key] = st.session_state.pop(pending_conf)
-            if pending_notes in st.session_state:
-                st.session_state[notes_key] = st.session_state.pop(pending_notes)
-
-            conf_url = st.text_input("Confluence URL", key=conf_key)
-
-            try:
-                from services.resolution_notes_library import list_notes
-                notes_lib = list_notes(project_id)
-            except Exception:
-                notes_lib = []
-            if notes_lib:
-                pick = st.selectbox(
-                    "Saved resolution notes",
-                    options=[None] + list(range(len(notes_lib))),
-                    format_func=lambda i: "— pick —" if i is None else notes_lib[i]["title"],
-                    key=_sk(response_id, "rn_pick"),
-                )
-                if pick is not None and st.button("Use saved note", key=_sk(response_id, "rn_use")):
-                    st.session_state[pending_notes] = notes_lib[pick]["notes"]
-                    if notes_lib[pick].get("confluence_url"):
-                        st.session_state[pending_conf] = notes_lib[pick]["confluence_url"]
-                    st.toast("Note selected — fields update below")
-
-            cq1, cq2 = st.columns([3, 1])
-            cq = cq1.text_input(
-                "Search Confluence",
-                key=_sk(response_id, "conf_q"),
-                label_visibility="collapsed",
-                placeholder="Search Confluence…",
-            )
-            if cq2.button("Search", key=_sk(response_id, "conf_search")) and (cq or "").strip():
-                with st.spinner("Searching…"):
-                    try:
-                        from services.confluence_search import search_pages
-                        hits = search_pages(user.id, cq.strip())
-                        st.session_state[_sk(response_id, "conf_hits")] = hits
-                    except Exception as exc:
-                        st.error(_msg(exc))
-            hits = st.session_state.get(_sk(response_id, "conf_hits")) or []
-            if hits:
-                pick = st.selectbox(
-                    "Page",
-                    range(len(hits)),
-                    format_func=lambda i: hits[i]["title"][:50],
-                    key=_sk(response_id, "conf_pick"),
-                )
-                if st.button("Use page", key=_sk(response_id, "conf_use")):
-                    st.session_state[pending_conf] = hits[pick]["url"]
-                    st.toast("URL selected")
-            use_ai_notes = st.checkbox(
-                "Polish with AI (slower)",
-                value=False,
-                key=_sk(response_id, "conf_ai"),
-                help="Off = fast template from Confluence page. On = Ollama rewrite.",
-            )
-            if st.button("Draft notes", key=_sk(response_id, "conf_draft")):
-                label = "Drafting with AI…" if use_ai_notes else "Fetching Confluence…"
-                with st.spinner(label):
-                    try:
-                        from services.resolution_notes_service import draft_resolution_notes
-                        notes = draft_resolution_notes(
-                            user_id=user.id,
-                            confluence_url=st.session_state.get(conf_key, "") or conf_url or "",
-                            ticket_key=issue["key"],
-                            ticket_summary=issue.get("summary") or "",
-                            extra_context="",
-                            use_ai=bool(use_ai_notes),
-                        )
-                        st.session_state[pending_notes] = notes or ""
-                        st.toast("Notes ready")
-                    except Exception as exc:
-                        st.error(_msg(exc))
-
-            if notes_key not in st.session_state:
-                st.session_state[notes_key] = ""
-            resolution_notes = st.text_area("Resolution notes", height=80, key=notes_key)
-            if resolution_notes.strip() and st.button("Save note to library", key=_sk(response_id, "rn_save")):
+        # Jira user search
+        pq1, pq2 = st.columns([3, 1])
+        people_q = pq1.text_input(
+            "Search Jira users",
+            key=_sk(response_id, "people_q"),
+            placeholder="name or username…",
+            label_visibility="collapsed",
+        )
+        if pq2.button("Search", key=_sk(response_id, "people_search")) and (people_q or "").strip():
+            with st.spinner("Searching users…"):
                 try:
-                    from services.resolution_notes_library import save_note
-                    save_note(
-                        project_id=project_id,
-                        title=f"{issue['key']} note",
-                        notes=resolution_notes,
-                        confluence_url=st.session_state.get(conf_key) or conf_url,
-                        user_id=user.id,
-                    )
-                    st.toast("Saved to resolution library")
-                except Exception as exp:
-                    st.error(_msg(exp))
+                    hits = jira_service.search_jira_users(user.id, people_q.strip()) or []
+                    st.session_state[_sk(response_id, "people_hits")] = hits
+                except Exception as exc:
+                    st.error(_msg(exc))
+                    st.session_state[_sk(response_id, "people_hits")] = []
+        people_hits = st.session_state.get(_sk(response_id, "people_hits")) or []
+        if people_hits:
+            for i, u in enumerate(people_hits[:8]):
+                label = u.get("displayName") or u.get("name") or u.get("accountId") or "?"
+                ident = (u.get("name") or u.get("accountId") or "").strip()
+                email = u.get("emailAddress") or ""
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.caption(f"**{label}**" + (f" · {email}" if email else "") + (f" · `{ident}`" if ident else ""))
+                if c2.button("Wiki", key=_sk(response_id, f"p_wiki_{i}"), disabled=not ident):
+                    st.session_state[_sk(response_id, "mention_user")] = ident
+                    st.toast(f"Wiki user → {ident}")
+                if c3.button("+Watch", key=_sk(response_id, f"p_watch_{i}"), disabled=not ident):
+                    cur = st.session_state.get(_sk(response_id, "extra_mentions")) or ""
+                    parts = [p.strip() for p in cur.replace(";", ",").split(",") if p.strip()]
+                    if ident not in parts:
+                        parts.append(ident)
+                    st.session_state[_sk(response_id, "extra_mentions")] = ", ".join(parts)
+                    st.session_state[_sk(response_id, "extra_as_watchers")] = True
+                    st.toast(f"Added watcher {ident}")
 
-        body_template = st.session_state.get(_sk(response_id, "body_override")) or response_body
-        reporter = issue.get("reporter") or "Customer"
-        preview = build_comment_preview(
-            body_template,
-            reporter_name=reporter,
-            mention_mode=mention_mode,
-            mention_username=mention_user or issue.get("reporter_username") or "",
-            resolution_notes=resolution_notes if is_closing else "",
+        extra_mentions = st.text_input(
+            "Other usernames (comma-separated)",
+            key=_sk(response_id, "extra_mentions"),
+            placeholder="j.doe, a.smith",
+            help="Server/DC: username. Cloud: accountId when required.",
         )
+        st.checkbox(
+            "Also add these users as watchers",
+            value=True,
+            key=_sk(response_id, "extra_as_watchers"),
+        )
+        mention_bits = []
+        if mention_assignee and (assignee_id or assignee_name):
+            mention_bits.append(f"[~{assignee_id}]" if assignee_id else assignee_name)
+        for part in re.split(r"[,;\s]+", extra_mentions or ""):
+            part = (part or "").strip()
+            if part:
+                mention_bits.append(f"[~{part}]")
+        st.session_state[_sk(response_id, "mention_line")] = (
+            ("cc: " + " ".join(mention_bits)) if mention_bits else ""
+        )
+
+    # ---- Actions row: time + transitions + files (same screen) ----
+    st.markdown("**Actions**")
+    t1, t2 = st.columns(2)
+    time_raw = t1.text_input("Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time"))
+    cache_k = _sk(response_id, "tr_cache_" + str(issue.get("key") or ""))
+    transitions = st.session_state.get(cache_k) or []
+    if not transitions:
         try:
-            from utils.personalization import personalize
-            from services.workspace_service import designation_overrides
-
-            overrides = designation_overrides(user.id)
-            # Ensure project_id key type matches DB (int)
-            pid = int(project_id) if project_id is not None else None
-            ticket_ctx = {
-                "TICKET": issue.get("key") or "",
-                "SUMMARY": issue.get("summary") or "",
-                "ASSIGNEE": issue.get("assignee") or issue.get("assignee_name") or "",
-                "PROJECT": issue.get("project_key")
-                or (issue.get("key") or "").split("-")[0],
-                "STATUS": issue.get("status") or "",
-            }
-            preview = personalize(
-                preview,
-                user,
-                pid,
-                designation_overrides=overrides,
-                recipient=reporter,
-                context=ticket_ctx,
-            )
+            transitions = jira_service.list_transitions_friendly(
+                user.id, issue["key"], jira_project_key=issue.get("project_key")
+            ) or []
+            st.session_state[cache_k] = transitions
         except Exception:
-            pass
+            logger.exception("list transitions failed")
+            transitions = []
+    label_to_id = {}
+    labels_ordered = []
+    for x in transitions:
+        lab = x.get("label") or x.get("name") or str(x.get("id"))
+        labels_ordered.append(lab)
+        label_to_id[lab] = str(x.get("id"))
+    selected_labels = t2.multiselect(
+        "Transitions (order = steps)",
+        labels_ordered,
+        key=_sk(response_id, "transitions_multi"),
+        help="Select one or more. Applied in list order with the comment.",
+    )
+    transition_chain = [(label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id]
 
+    uploads = st.file_uploader(
+        "Attachments",
+        accept_multiple_files=True,
+        type=["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "log"],
+        key=_sk(response_id, "uploads"),
+    )
+    if st.session_state.pop(_sk(response_id, "pending_clear_clip"), None):
+        st.session_state[_sk(response_id, "clipboard_bridge")] = ""
+    st.text_area(
+        f"clipboard_bridge_{str(response_id).replace('-', '')[:12]}",
+        key=_sk(response_id, "clipboard_bridge"),
+        height=40,
+        label_visibility="collapsed",
+        placeholder="Optional: paste data-URL for screenshot",
+    )
 
-        # ---- Mentions / participants (watchers) ----
-        with st.expander("Mentions & participants", expanded=False):
-            st.caption(
-                "Mention in the comment with Jira wiki [~username]. "
-                "Anyone written as @username in the template or fields is mentioned and **automatically added as a watcher/participant** on the ticket (whether they were already on it or not)."
-            )
-            assignee_name = issue.get("assignee") or ""
-            assignee_id = issue.get("assignee_username") or ""
-            c_m1, c_m2 = st.columns(2)
-            mention_assignee = c_m1.checkbox(
-                f"Mention assignee ({assignee_name or '—'})",
-                value=False,
-                key=_sk(response_id, "mention_assignee"),
-                disabled=not bool(assignee_id or assignee_name),
-            )
-            c_m2.checkbox(
-                "Add assignee as watcher",
-                value=False,
-                key=_sk(response_id, "watch_assignee"),
-                disabled=not bool(assignee_id),
-            )
-            extra_mentions = st.text_input(
-                "Other usernames to mention (comma-separated)",
-                key=_sk(response_id, "extra_mentions"),
-                placeholder="j.doe, a.smith",
-                help="Server/DC: Jira username. Cloud: accountId or email if your site allows.",
-            )
-            st.checkbox(
-                "Also add these users as watchers on the ticket",
-                value=True,
-                key=_sk(response_id, "extra_as_watchers"),
-            )
-            # Append mention lines into preview path via session for post
-            mention_bits = []
-            if mention_assignee and (assignee_id or assignee_name):
-                mention_bits.append(f"[~{assignee_id}]" if assignee_id else assignee_name)
-            for part in re.split(r"[,;\s]+", extra_mentions or ""):
-                part = part.strip().lstrip("@")
-                if part:
-                    mention_bits.append(f"[~{part}]")
-            st.session_state[_sk(response_id, "mention_line")] = (
-                ("cc: " + " ".join(mention_bits)) if mention_bits else ""
-            )
+    # ---- Closing / resolution (expander) ----
+    is_closing = st.checkbox("Closing / resolve", key=_sk(response_id, "closing"))
+    resolution_notes = ""
+    if is_closing:
+        conf_key = _sk(response_id, "conf_url")
+        notes_key = _sk(response_id, "res_notes")
+        pending_conf = _sk(response_id, "pending_conf_url")
+        pending_notes = _sk(response_id, "pending_res_notes")
+        if pending_conf in st.session_state:
+            st.session_state[conf_key] = st.session_state.pop(pending_conf)
+        if pending_notes in st.session_state:
+            st.session_state[notes_key] = st.session_state.pop(pending_notes)
 
-        # Dynamic [bracket] fields — library template unchanged; fill only for this post
-        from services.template_fields import extract_bracket_fields, apply_bracket_fields
+        conf_url = st.text_input("Confluence URL", key=conf_key)
+        try:
+            from services.resolution_notes_library import list_notes
+            notes_lib = list_notes(project_id)
+        except Exception:
+            notes_lib = []
+        if notes_lib:
+            pick = st.selectbox(
+                "Saved resolution notes",
+                options=[None] + list(range(len(notes_lib))),
+                format_func=lambda i: "— pick —" if i is None else notes_lib[i]["title"],
+                key=_sk(response_id, "rn_pick"),
+            )
+            if pick is not None and st.button("Use saved note", key=_sk(response_id, "rn_use")):
+                st.session_state[pending_notes] = notes_lib[pick]["notes"]
+                if notes_lib[pick].get("confluence_url"):
+                    st.session_state[pending_conf] = notes_lib[pick]["confluence_url"]
+                st.toast("Note selected — fields update below")
 
-        _field_source = body_template or ""
-        _bracket_labels = extract_bracket_fields(_field_source)
-        # Also detect fields that remain after personalize (if greeting path left any)
-        for _lbl in extract_bracket_fields(preview):
-            if _lbl not in _bracket_labels:
-                _bracket_labels.append(_lbl)
-        field_values: dict[str, str] = {}
-        if _bracket_labels:
-            st.markdown("**Template fields**")
-            st.caption("Fill-in for this ticket only (library unchanged). Paste plain URLs, markdown links, or HTML links — they are normalized for Jira.")
-            for _lbl in _bracket_labels:
-                _fkey = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
-                field_values[_lbl] = st.text_input(_lbl, key=_fkey, placeholder=f"Text or paste link for [{_lbl}]")
-            preview = apply_bracket_fields(preview, field_values)
-            # Re-apply on body if some tokens only in template path
-            preview = apply_bracket_fields(preview, field_values)
+        cq1, cq2 = st.columns([3, 1])
+        cq = cq1.text_input(
+            "Search Confluence",
+            key=_sk(response_id, "conf_q"),
+            label_visibility="collapsed",
+            placeholder="Search Confluence…",
+        )
+        if cq2.button("Search", key=_sk(response_id, "conf_search")) and (cq or "").strip():
+            with st.spinner("Searching…"):
+                try:
+                    from services.confluence_search import search_pages
+                    hits = search_pages(user.id, cq.strip())
+                    st.session_state[_sk(response_id, "conf_hits")] = hits
+                except Exception as exc:
+                    st.error(_msg(exc))
+        hits = st.session_state.get(_sk(response_id, "conf_hits")) or []
+        if hits:
+            pick = st.selectbox(
+                "Page",
+                range(len(hits)),
+                format_func=lambda i: hits[i]["title"][:50],
+                key=_sk(response_id, "conf_pick"),
+            )
+            if st.button("Use page", key=_sk(response_id, "conf_use")):
+                st.session_state[pending_conf] = hits[pick]["url"]
+                st.toast("URL selected")
+        use_ai_notes = st.checkbox(
+            "Polish with AI (slower)",
+            value=False,
+            key=_sk(response_id, "conf_ai"),
+            help="Off = fast template from Confluence page. On = Ollama rewrite.",
+        )
+        if st.button("Draft notes", key=_sk(response_id, "conf_draft")):
+            label = "Drafting with AI…" if use_ai_notes else "Fetching Confluence…"
+            with st.spinner(label):
+                try:
+                    from services.resolution_notes_service import draft_resolution_notes
+                    notes = draft_resolution_notes(
+                        user_id=user.id,
+                        confluence_url=st.session_state.get(conf_key, "") or conf_url or "",
+                        ticket_key=issue["key"],
+                        ticket_summary=issue.get("summary") or "",
+                        extra_context="",
+                        use_ai=bool(use_ai_notes),
+                    )
+                    st.session_state[pending_notes] = notes or ""
+                    st.toast("Notes ready")
+                except Exception as exc:
+                    st.error(_msg(exc))
 
-        _ml = st.session_state.get(_sk(response_id, "mention_line")) or ""
-        if _ml and _ml not in (preview or ""):
-            preview = ((preview or "").rstrip() + "\n\n" + _ml + "\n")
+        if notes_key not in st.session_state:
+            st.session_state[notes_key] = ""
+        resolution_notes = st.text_area("Resolution notes", height=80, key=notes_key)
+        if resolution_notes.strip() and st.button("Save note to library", key=_sk(response_id, "rn_save")):
+            try:
+                from services.resolution_notes_library import save_note
+                save_note(
+                    project_id=project_id,
+                    title=f"{issue['key']} note",
+                    notes=resolution_notes,
+                    confluence_url=st.session_state.get(conf_key) or conf_url,
+                    user_id=user.id,
+                )
+                st.toast("Saved to resolution library")
+            except Exception as exp:
+                st.error(_msg(exp))
 
+    # ---- Preview (personalize) ----
+    body_template = st.session_state.get(_sk(response_id, "body_override")) or response_body
+    reporter = issue.get("reporter") or "Customer"
+    preview = build_comment_preview(
+        body_template,
+        reporter_name=reporter,
+        mention_mode=mention_mode,
+        mention_username=mention_user or issue.get("reporter_username") or "",
+        resolution_notes=resolution_notes if is_closing else "",
+    )
+    try:
+        from utils.personalization import personalize
+        from services.workspace_service import designation_overrides
+
+        overrides = designation_overrides(user.id)
+        pid = int(project_id) if project_id is not None else None
+        ticket_ctx = {
+            "TICKET": issue.get("key") or "",
+            "SUMMARY": issue.get("summary") or "",
+            "ASSIGNEE": issue.get("assignee") or issue.get("assignee_name") or "",
+            "PROJECT": issue.get("project_key") or (issue.get("key") or "").split("-")[0],
+            "STATUS": issue.get("status") or "",
+        }
+        preview = personalize(
+            preview,
+            user,
+            pid,
+            designation_overrides=overrides,
+            recipient=reporter,
+            context=ticket_ctx,
+        )
+    except Exception:
+        pass
+
+    _ml = st.session_state.get(_sk(response_id, "mention_line")) or ""
+    if _ml:
+        preview = (preview or "").rstrip() + "\n\n" + _ml
+    try:
         from services.mention_utils import extract_at_usernames, to_jira_wiki_mentions
         preview = to_jira_wiki_mentions(preview or "")
         st.session_state[_sk(response_id, "auto_watch_from_body")] = extract_at_usernames(
@@ -493,112 +535,74 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             + " " + (st.session_state.get(_sk(response_id, "mention_line")) or "")
             + " " + (st.session_state.get(_sk(response_id, "extra_mentions")) or "")
         )
+    except Exception:
+        pass
 
-        with st.expander("Preview", expanded=True):
-            st.code(preview, language=None, wrap_lines=True)
-            st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · [custom fields] above")
+    with st.expander("Preview", expanded=True):
+        st.code(preview, language=None, wrap_lines=True)
+        st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · [custom fields]")
 
-    transition_chain = []
-    with tab_a:
-        t1, t2 = st.columns(2)
-        time_raw = t1.text_input("Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time"))
-        cache_k = _sk(response_id, "tr_cache_" + str(issue.get("key") or ""))
-        transitions = st.session_state.get(cache_k) or []
-        if not transitions:
-            try:
-                transitions = jira_service.list_transitions_friendly(
-                    user.id, issue["key"], jira_project_key=issue.get("project_key")
-                ) or []
-                st.session_state[cache_k] = transitions
-            except Exception:
-                logger.exception("list transitions failed")
-                transitions = []
-        # Multi-step transitions: order of selection = execution order
-        label_to_id = {}
-        labels_ordered = []
-        for x in transitions:
-            lab = x.get("label") or x.get("name") or str(x.get("id"))
-            labels_ordered.append(lab)
-            label_to_id[lab] = str(x.get("id"))
-        selected_labels = t2.multiselect(
-            "Transitions (order = steps)",
-            labels_ordered,
-            key=_sk(response_id, "transitions_multi"),
-            help="Select one or more. Applied in list order before/with the comment.",
-        )
-        transition_chain = [(label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id]
-
-        uploads = st.file_uploader(
-            "Attachments",
-            accept_multiple_files=True,
-            type=["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "log"],
-            key=_sk(response_id, "uploads"),
-        )
-        if st.session_state.pop(_sk(response_id, "pending_clear_clip"), None):
-            st.session_state[_sk(response_id, "clipboard_bridge")] = ""
-        st.text_area(
-            f"clipboard_bridge_{str(response_id).replace('-', '')[:12]}",
-            key=_sk(response_id, "clipboard_bridge"),
-            height=40,
-            label_visibility="collapsed",
-            placeholder="Optional: paste data-URL for screenshot",
-        )
-
+    # ---- Tools: bulk + translate (collapsed) ----
+    with st.expander("More tools (bulk / translate)"):
         req = required or (issue.get("project_key") or issue["key"].split("-")[0]).upper()
-        with st.expander(f"Bulk ({req}-*)"):
-            bulk_raw = st.text_input("Keys", key=_sk(response_id, "bulk"), placeholder=f"{req}-1, {req}-2")
-            if st.button("Post bulk", key=_sk(response_id, "bulk_go")):
-                from services.bulk_comment import parse_keys, post_bulk_comment
-                with st.spinner("Bulk posting…"):
-                    try:
-                        # Use template + [fields], NOT preview (preview has first ticket's reporter)
-                        from services.template_fields import apply_bracket_fields, extract_bracket_fields
-                        _bulk_body = st.session_state.get(_sk(response_id, "body_override")) or response_body
-                        _fv = {}
-                        for _lbl in extract_bracket_fields(_bulk_body):
-                            _fk = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
-                            _fv[_lbl] = st.session_state.get(_fk, "")
-                        _bulk_body = apply_bracket_fields(_bulk_body, _fv)
-                        result = post_bulk_comment(
-                            user.id,
-                            parse_keys(bulk_raw),
-                            _bulk_body,
-                            required_prefix=req,
-                            time_raw=time_raw,
-                            internal=internal,
-                            mention_mode=st.session_state.get(_sk(response_id, "mention_mode"), "plain"),
-                            resolution_notes=st.session_state.get(_sk(response_id, "res_notes"), "") or "",
-                        )
-                        if result.get("ok"):
-                            st.success("OK: " + ", ".join(result["ok"]))
-                        for f in result.get("failed") or []:
-                            st.error(str(f))
-                    except Exception as exc:
-                        st.error(_msg(exc))
+        st.markdown(f"**Bulk post** ({req}-*)")
+        bulk_raw = st.text_input("Keys", key=_sk(response_id, "bulk"), placeholder=f"{req}-1, {req}-2")
+        if st.button("Post bulk", key=_sk(response_id, "bulk_go")):
+            from services.bulk_comment import parse_keys, post_bulk_comment
+            with st.spinner("Bulk posting…"):
+                try:
+                    from services.template_fields import apply_bracket_fields, extract_bracket_fields
+                    _bulk_body = st.session_state.get(_sk(response_id, "body_override")) or response_body
+                    _fv = {}
+                    for _lbl in extract_bracket_fields(_bulk_body):
+                        _fk = _sk(response_id, "tf_" + _lbl.lower().replace(" ", "_")[:40])
+                        _fv[_lbl] = st.session_state.get(_fk, "")
+                    _bulk_body = apply_bracket_fields(_bulk_body, _fv)
+                    result = post_bulk_comment(
+                        user.id,
+                        parse_keys(bulk_raw),
+                        _bulk_body,
+                        required_prefix=req,
+                        time_raw=time_raw,
+                        internal=internal,
+                        mention_mode=st.session_state.get(_sk(response_id, "mention_mode"), "plain"),
+                        resolution_notes=st.session_state.get(_sk(response_id, "res_notes"), "") or "",
+                    )
+                    if result.get("ok"):
+                        st.success("OK: " + ", ".join(result["ok"]))
+                    for f in result.get("failed") or []:
+                        st.error(str(f))
+                except Exception as exc:
+                    st.error(_msg(exc))
 
-    with tab_m:
-        lang = st.selectbox("Translate to", ["Original", "English", "French", "German", "Spanish"], key=_sk(response_id, "lang"))
+        st.markdown("**Translate**")
+        lang = st.selectbox(
+            "Translate to",
+            ["Original", "English", "French", "German", "Spanish"],
+            key=_sk(response_id, "lang"),
+        )
         if st.button("Translate", key=_sk(response_id, "translate")) and lang != "Original":
             with st.spinner("Translating…"):
                 try:
                     from services.ai_service import chat
-                    src = st.session_state.get(_sk(response_id, "body_override")) or response_body
+                    src_txt = st.session_state.get(_sk(response_id, "body_override")) or response_body
                     out = chat(
                         f"Translate this support reply into {lang}. Keep names and URLs. Output only translation.",
-                        src,
+                        src_txt,
                     )
                     if (out or "").strip():
                         st.session_state[_sk(response_id, "body_override")] = out.strip()
                         st.toast("Translated")
                 except Exception as exc:
                     st.error(_msg(exc))
-        if st.session_state.get(_sk(response_id, "body_override")) and st.button("Clear translation", key=_sk(response_id, "clear_tr")):
+        if st.session_state.get(_sk(response_id, "body_override")) and st.button(
+            "Clear translation", key=_sk(response_id, "clear_tr")
+        ):
             st.session_state.pop(_sk(response_id, "body_override"), None)
             st.toast("Cleared translation")
 
 
     # ---- Safety: plan + post ----
-    _files = st.session_state.get(_sk(response_id, "files"))  # may be unset until file widget
     try:
         files_n = len(uploads) if uploads else 0
     except NameError:

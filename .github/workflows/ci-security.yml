@@ -1,0 +1,14 @@
+name: Security guards
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+
+jobs:
+  block-rewrite-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block APPLY/SYNC rewrite scripts and large base64 blobs (H1)
+        run: bash scripts/ci_block_apply_scripts.sh

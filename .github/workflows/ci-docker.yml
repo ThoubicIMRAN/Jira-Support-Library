@@ -28,6 +28,26 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
+      - name: Block source-rewriting APPLY scripts and large base64 blobs
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files '*_APPLY.py' '*APPLY*.py' 'SYNC_LATEST_APPLY.py' 2>/dev/null || true)
+          if [ -n "${bad}" ]; then
+            echo "::error::Source-rewriting APPLY scripts must not be committed:"
+            echo "${bad}"
+            exit 1
+          fi
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            size=$(wc -c < "$f" | tr -d ' ')
+            if [ "$size" -gt 50000 ]; then
+              hits=$(grep -oE '[A-Za-z0-9+/]{80,}={0,2}' "$f" | wc -l | tr -d ' ')
+              if [ "$hits" -gt 5 ]; then
+                echo "::error::$f looks like a base64-payload APPLY script (size=$size long_b64_runs=$hits)"
+                exit 1
+              fi
+            fi
+          done < <(git ls-files '*.py')
       - name: Lint
         run: python -m pyflakes $(git ls-files '*.py' | grep -v '^alembic/')
       - name: Test
@@ -40,7 +60,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: write          # push to ghcr.io with the built-in GITHUB_TOKEN
+      packages: write
     steps:
       - uses: actions/checkout@v4
 

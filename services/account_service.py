@@ -106,14 +106,21 @@ def register_user(username, full_name, email, password, designation='Support Eng
 def admin_set_password(target_user_id: int, new_password: str, actor_id: int) -> None:
     """Superadmin sets a temporary password; user must change on next login."""
     from utils.validators import valid_password
+    from services.session_service import revoke_user_sessions
+    from services.rate_limit import limit_password_change
+
     if not valid_password(new_password or ""):
         raise ValueError("Password must be at least 8 characters.")
     with SessionLocal() as db:
+        actor = db.get(User, actor_id)
         target = db.get(User, target_user_id)
-        if not target:
+        if not actor or not target:
             raise ValueError("User not found.")
+        if actor.role != "superadmin":
+            raise ValueError("Only a superadmin can set another user's password.")
         if target.id == actor_id:
             raise ValueError("Use Change password for your own account.")
+        limit_password_change(actor_id)
         target.password_hash = hash_password(new_password)
         target.must_change_password = True
         target.is_active = True
@@ -126,6 +133,8 @@ def admin_set_password(target_user_id: int, new_password: str, actor_id: int) ->
         ))
         db.commit()
     unlock_login(target.username)
+    # Force re-auth after password reset
+    revoke_user_sessions(target_user_id)
 
 
 def unlock_login(identity: str) -> int:
@@ -173,14 +182,18 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
         UserConfluenceCredential,
         BulkPostLog,
     )
+    from services.session_service import revoke_user_sessions
 
     if target_user_id == actor_id:
         raise ValueError("You cannot delete your own account.")
 
     with SessionLocal() as db:
+        actor = db.get(User, actor_id)
         target = db.get(User, target_user_id)
-        if not target:
+        if not actor or not target:
             raise ValueError("User not found.")
+        if actor.role != "superadmin":
+            raise ValueError("Only a superadmin can delete user accounts.")
         if target.role == "superadmin":
             # Prevent deleting the last superadmin
             from sqlalchemy import func
@@ -191,6 +204,8 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
             ) or 0
             if n <= 1:
                 raise ValueError("Cannot delete the last active superadmin.")
+        # Revoke sessions before hard-delete so tokens cannot be reused
+        revoke_user_sessions(target_user_id)
 
         username = target.username
         uid = target.id
@@ -286,13 +301,18 @@ def admin_update_user(
     role: str | None = None,
     is_active: bool | None = None,
 ) -> None:
-    """Admin/superadmin updates profile fields for another user (RBAC enforced by caller)."""
+    """Admin/superadmin updates profile fields for another user (RBAC enforced here)."""
+    from services.session_service import revoke_user_sessions
+
     ROLES = {"user", "manager", "admin", "superadmin"}
+    must_revoke = False
     with SessionLocal() as db:
         actor = db.get(User, actor_id)
         target = db.get(User, target_id)
         if not actor or not target:
             raise ValueError("User not found.")
+        if actor.role not in ("admin", "superadmin"):
+            raise ValueError("Only admin or superadmin can update user accounts.")
         if target_id == actor_id and role is not None and role != target.role:
             raise ValueError("You cannot change your own role here.")
         if full_name is not None:
@@ -323,10 +343,14 @@ def admin_update_user(
                 ) or 0
                 if n <= 1:
                     raise ValueError("Cannot demote the last active superadmin.")
+            if role != target.role:
+                must_revoke = True
             target.role = role
         if is_active is not None:
             if target_id == actor_id and not is_active:
                 raise ValueError("You cannot deactivate your own account.")
+            if bool(is_active) != bool(target.is_active):
+                must_revoke = True
             target.is_active = bool(is_active)
         db.add(AuditLog(
             user_id=actor_id,
@@ -336,3 +360,6 @@ def admin_update_user(
             details=target.username,
         ))
         db.commit()
+    if must_revoke:
+        # Demotion, deactivation or role change → force re-login
+        revoke_user_sessions(target_id)

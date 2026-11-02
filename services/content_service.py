@@ -106,17 +106,16 @@ def move_category(category_id, direction, user_id, role="superadmin"):
         return True
 
 
-
-def find_near_duplicates(project_id: int, body: str, *, threshold: float = 0.85, limit: int = 3) -> list[dict]:
+def find_near_duplicates(
+    project_id: int,
+    body: str,
+    *,
+    threshold: float = 0.85,
+    limit: int = 3,
+) -> list[dict]:
     """Semantic near-duplicates of body within a project (for save warnings)."""
     from services.similarity_search import find_near_duplicates as _fn
     return _fn(project_id, body, threshold=threshold, limit=limit)
-
-    try:
-        from services import ai_service
-        return ai_service.find_top_matches(int(project_id), text, limit=limit, threshold=threshold)
-    except Exception:
-        return []
 
 
 def create_response(user_id, role, category_id, title, badge, preview, body):
@@ -248,7 +247,7 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
             for ci, category_data in enumerate(categories):
                 if not isinstance(category_data, dict):
                     raise ContentError(f"Category {ci + 1} is malformed.")
-                name = str(category_data.get("name", "")).strip()
+                name = str(category_data.get("name", "") or "").strip()
                 if not name:
                     raise ContentError(f"Category {ci + 1} has no name.")
                 category = db.scalar(select(Category).where(Category.project_id == project_id, Category.name == name))
@@ -270,7 +269,7 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
                             record.get("response_body", record.get("response")))
                     except ContentError:
                         raise ContentError(f"Invalid response at {name} row {ri + 1}.")
-                    proposed = str(record.get("id", "")).strip()
+                    proposed = str(record.get("id", "") or "").strip()
                     rid = proposed if proposed and len(proposed) <= 80 and proposed not in existing_ids else _new_id()
                     existing_ids.add(rid)
                     db.add(Response(id=rid, category_id=category.id, title=title, badge=badge,
@@ -286,7 +285,6 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
         raise
 
 
-
 def list_category_tree(project_id: int) -> list[dict]:
     """Return [{id, name, parent_id, children:[{id,name,...}]}] top-level only with children."""
     with SessionLocal() as db:
@@ -298,6 +296,7 @@ def list_category_tree(project_id: int) -> list[dict]:
     by_parent: dict[int | None, list] = {}
     for r in rows:
         by_parent.setdefault(r.parent_id, []).append(r)
+
     def node(c):
         return {
             "id": c.id,
@@ -305,10 +304,12 @@ def list_category_tree(project_id: int) -> list[dict]:
             "parent_id": c.parent_id,
             "children": [node(ch) for ch in by_parent.get(c.id, [])],
         }
+
     return [node(c) for c in by_parent.get(None, [])]
 
 
 def create_category(user_id, role, project_id, name, parent_id=None):
+    _require(role, "manage_content")
     name = (name or "").strip()
     if not name:
         raise ContentError("Category name is required.")

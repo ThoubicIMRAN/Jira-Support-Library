@@ -258,6 +258,8 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
 
 
 def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False) -> None:
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     body = (body or "").strip()
     if not body:
         raise JiraError("Comment body is empty.")
@@ -300,6 +302,8 @@ def validate_attachment(filename: str, content: bytes) -> str:
 
 
 def add_attachment(user_id: int, issue_key: str, filename: str, content: bytes, content_type: str | None = None) -> None:
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     filename = validate_attachment(filename, content)
     client = get_client_for_user(user_id)
     client.add_attachment(issue_key, filename, content, content_type)
@@ -313,6 +317,8 @@ def log_work(
     *,
     comment: str | None = None,
 ) -> str:
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     time_spent = normalize_time_spent(time_raw)
     client = get_client_for_user(user_id)
     client.add_worklog(issue_key, time_spent=time_spent, comment=comment or None)
@@ -347,6 +353,8 @@ def list_transitions_friendly(
 
 
 def transition_issue(user_id: int, issue_key: str, transition_id: str, label: str = "") -> None:
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     client = get_client_for_user(user_id)
     client.do_transition(issue_key, transition_id)
     _audit(user_id, "jira_transition", issue_key, label or transition_id)
@@ -492,54 +500,27 @@ def find_similar_open_issues(user_id: int, issue: dict, *, limit: int = 5) -> li
 
 
 def suggest_library_for_issue(user_id: int, project_id: int, issue: dict) -> list[dict]:
-    """Smart suggestions: top semantic matches, boosted by votes."""
-    from services.similarity_search import find_top_matches
+    """Smart suggestions: semantic match library responses to ticket summary/description."""
+    from services import ai_service
 
-    text = (issue.get("summary") or "") + chr(10) + (issue.get("status") or "")
+    text = f"{issue.get('summary') or ''}\n{issue.get('status') or ''}"
     if not text.strip():
         return []
     try:
-        hits = find_top_matches(project_id, text, limit=5, threshold=0.45)
+        hit, score = ai_service.find_best_match(project_id, text, threshold=0.5)
     except Exception:
-        logger.exception("suggest_library_for_issue failed")
         return []
-    if not hits:
+    if not hit:
         return []
-
-    boost: dict[str, float] = {}
-    try:
-        from database import AuditLog, SessionLocal
-        from sqlalchemy import select
-
-        ids = [h["id"] for h in hits]
-        with SessionLocal() as db:
-            rows = db.scalars(
-                select(AuditLog).where(
-                    AuditLog.entity_type == "response",
-                    AuditLog.entity_id.in_(ids),
-                    AuditLog.action.in_(("suggestion_up", "suggestion_down")),
-                ).limit(500)
-            ).all()
-            for row in rows:
-                rid = row.entity_id or ""
-                if row.action == "suggestion_up":
-                    boost[rid] = boost.get(rid, 0.0) + 0.03
-                elif row.action == "suggestion_down":
-                    boost[rid] = boost.get(rid, 0.0) - 0.04
-    except Exception:
-        logger.debug("vote boost skipped", exc_info=True)
-
-    ranked = []
-    for h in hits:
-        score = float(h.get("score") or 0) + boost.get(str(h["id"]), 0.0)
-        ranked.append({
-            "id": h["id"],
-            "title": h["title"],
-            "body": h["body"],
+    # Also try a slightly lower bar for top few — find_best_match returns one; expand later
+    return [
+        {
+            "id": hit.id,
+            "title": hit.title,
+            "body": hit.response_body,
             "score": score,
-        })
-    ranked.sort(key=lambda x: x["score"], reverse=True)
-    return ranked[:3]
+        }
+    ]
 
 
 
@@ -576,6 +557,8 @@ def multi_step_transition(
     Each step uses the issue's current available transitions. If an id is no
     longer available mid-chain, raises JiraError after applying prior steps.
     """
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     if not transition_ids:
         return []
     labels = labels or []
@@ -633,7 +616,6 @@ def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
             "duedate": fields.get("duedate") or None,
             "priority": (fields.get("priority") or {}).get("name") or "",
             "updated": fields.get("updated") or "",
-            "created": fields.get("created") or "",
         })
     return out
 

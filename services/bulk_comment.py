@@ -78,7 +78,9 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
     tokens are applied per issue.
     """
     from services.jira_text import build_comment_preview
+    from services.rate_limit import limit_bulk_run
 
+    limit_bulk_run(user_id)
     limit = BULK_MAX_TICKETS if max_tickets is None else max_tickets
     pause = BULK_DELAY_SECONDS if delay is None else delay
     if not (body or "").strip():
