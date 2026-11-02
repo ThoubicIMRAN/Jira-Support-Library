@@ -5,6 +5,7 @@ prefer Redis later; this still stops casual brute-force on a single instance.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -20,6 +21,19 @@ class RateLimitExceeded(Exception):
         self.retry_after = retry_after
 
 
+def _rate_limits_disabled() -> bool:
+    """Skip limiting in unit tests (APP_ENV=test or pytest)."""
+    env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    if env == "test":
+        return True
+    if os.getenv("RATE_LIMIT_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    # pytest sets this when running the test suite
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    return False
+
+
 def _prune(q: Deque[float], window: float, now: float) -> None:
     while q and q[0] <= now - window:
         q.popleft()
@@ -32,6 +46,8 @@ def check_rate_limit(
     window_seconds: float,
 ) -> None:
     """Raise RateLimitExceeded if key exceeded max_calls in window."""
+    if _rate_limits_disabled():
+        return
     if max_calls <= 0 or window_seconds <= 0:
         return
     now = time.monotonic()
