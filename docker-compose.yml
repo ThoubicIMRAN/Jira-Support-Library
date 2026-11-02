@@ -15,12 +15,15 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama:latest
+    # Pin a known tag; override with OLLAMA_IMAGE if needed
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.3.12}
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
+    # SECURITY: never publish 11434 to the host. Ollama has no auth.
+    # Access only via the internal compose network (http://ollama:11434).
+    # ports:
+    #   - "11434:11434"
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -37,7 +40,7 @@ services:
     #           capabilities: [gpu]
 
   ollama-init:
-    image: ollama/ollama:latest
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.3.12}
     depends_on:
       ollama:
         condition: service_started
@@ -65,20 +68,21 @@ services:
     restart: "no"
 
   app:
-    image: ghcr.io/thoubicimran/jira-support-library:latest
-    pull_policy: always
+    build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env (postgresql+psycopg://USER:PASSWORD@db:5432/DBNAME)}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       OLLAMA_BASE: ${OLLAMA_BASE:-http://ollama:11434}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       AI_SIMILARITY_THRESHOLD: ${AI_SIMILARITY_THRESHOLD:-0.82}
       AI_REQUEST_TIMEOUT: ${AI_REQUEST_TIMEOUT:-180}
+    # SECURITY: bind to loopback only. Put a TLS reverse proxy (Caddy/nginx)
+    # in front for real access. Do not expose 8501 on 0.0.0.0 in production.
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
       db:
         condition: service_healthy

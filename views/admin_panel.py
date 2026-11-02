@@ -264,7 +264,10 @@ def render(user, *, embedded: bool = False):
                             )
                             if st.button("Save avatar", key=f"adm_av_save_{account.id}") and aup:
                                 try:
-                                    set_avatar(account.id, aup.getvalue(), aup.type or "image/png")
+                                    set_avatar(
+                                        account.id, aup.getvalue(), aup.type or "image/png",
+                                        actor_id=user.id, actor_role=getattr(user, "role", None),
+                                    )
                                     st.success("Avatar updated.")
                                     st.rerun()
                                 except AvatarError as exc:

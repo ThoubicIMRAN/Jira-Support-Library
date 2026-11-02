@@ -106,12 +106,6 @@ def move_category(category_id, direction, user_id, role="superadmin"):
         return True
 
 
-def find_near_duplicates(project_id: int, body: str, *, threshold: float = 0.85, limit: int = 3) -> list[dict]:
-    """Semantic near-duplicates of body within a project (for save warnings)."""
-    from services.similarity_search import find_near_duplicates as _fn
-    return _fn(project_id, body, threshold=threshold, limit=limit)
-
-
 def create_response(user_id, role, category_id, title, badge, preview, body):
     _require(role, "create")
     title, badge, preview, body = _clean_fields(title, badge, preview, body)
@@ -279,6 +273,7 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
         raise
 
 
+
 def list_category_tree(project_id: int) -> list[dict]:
     """Return [{id, name, parent_id, children:[{id,name,...}]}] top-level only with children."""
     with SessionLocal() as db:
@@ -301,6 +296,7 @@ def list_category_tree(project_id: int) -> list[dict]:
 
 
 def create_category(user_id, role, project_id, name, parent_id=None):
+    _require(role, "manage_content")
     name = (name or "").strip()
     if not name:
         raise ContentError("Category name is required.")

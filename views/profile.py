@@ -212,7 +212,10 @@ def render_profile_form(user) -> None:
                     mime = (up.type or "").strip() or "image/png"
                     if up.name and up.name.lower().endswith(".jpg"):
                         mime = mime or "image/jpeg"
-                    set_avatar(user.id, raw, mime)
+                    set_avatar(
+                        user.id, raw, mime,
+                        actor_id=user.id, actor_role=getattr(user, "role", None),
+                    )
                     st.session_state[SESSION_FLASH] = "Profile photo updated."
                     st.rerun()
                 except AvatarError as exc:
@@ -222,7 +225,10 @@ def render_profile_form(user) -> None:
                     st.error(f"Could not save photo: {exc}")
         if b2.button("Remove photo", key=f"avatar_clr_{user.id}"):
             try:
-                clear_avatar(user.id)
+                clear_avatar(
+                    user.id,
+                    actor_id=user.id, actor_role=getattr(user, "role", None),
+                )
                 st.session_state[SESSION_FLASH] = "Profile photo removed."
                 st.rerun()
             except Exception as exc:

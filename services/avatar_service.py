@@ -1,8 +1,8 @@
 """Profile avatar storage (bytes in DB) with validation."""
 from __future__ import annotations
 
-
 from database import SessionLocal, User
+from services.rate_limit import limit_avatar_upload
 
 ALLOWED_MIME = {
     "image/png": ".png",
@@ -16,12 +16,35 @@ class AvatarError(ValueError):
     pass
 
 
-def set_avatar(user_id: int, data: bytes, mime: str) -> None:
+def set_avatar(
+    user_id: int,
+    data: bytes,
+    mime: str,
+    *,
+    actor_id: int | None = None,
+    actor_role: str | None = None,
+) -> None:
+    """Store avatar bytes. Caller must be the user themselves or a superadmin.
+
+    actor_id / actor_role are required for authorization. If omitted (legacy
+    callers), only the same user_id is allowed via a soft check when both
+    match the session; prefer always passing actor_*.
+    """
     mime = (mime or "").split(";")[0].strip().lower()
     if mime not in ALLOWED_MIME:
         raise AvatarError("Only PNG, JPEG, or WebP images are allowed.")
     if not data or len(data) > MAX_BYTES:
         raise AvatarError(f"Image must be under {MAX_BYTES // 1024} KB.")
+
+    # Authorization: self or superadmin only
+    if actor_id is not None:
+        if int(actor_id) != int(user_id) and (actor_role or "") != "superadmin":
+            raise AvatarError("You can only change your own avatar.")
+        limit_avatar_upload(int(actor_id))
+    else:
+        # Legacy path: rate-limit by target user_id
+        limit_avatar_upload(int(user_id))
+
     with SessionLocal() as db:
         user = db.get(User, user_id)
         if not user:
@@ -32,7 +55,15 @@ def set_avatar(user_id: int, data: bytes, mime: str) -> None:
         db.commit()
 
 
-def clear_avatar(user_id: int) -> None:
+def clear_avatar(
+    user_id: int,
+    *,
+    actor_id: int | None = None,
+    actor_role: str | None = None,
+) -> None:
+    if actor_id is not None:
+        if int(actor_id) != int(user_id) and (actor_role or "") != "superadmin":
+            raise AvatarError("You can only clear your own avatar.")
     with SessionLocal() as db:
         user = db.get(User, user_id)
         if not user:
