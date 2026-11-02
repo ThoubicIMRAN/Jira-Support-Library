@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from database import SessionLocal, JiraTransitionChain, init_db
+from database import SessionLocal, init_db
 from services import jira_transition_chains as chains
+from services.jira_transition_chains import JiraTransitionChain
 
 
 def test_transition_chain_crud_roundtrip():
