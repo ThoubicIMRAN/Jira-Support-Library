@@ -31,10 +31,11 @@ def issue_badges(issue: dict, *, stale_days: int = 14) -> list[str]:
     badges: list[str] = []
     due = _parse_day(issue.get("duedate"))
     if due is not None:
-        delta = (due - today).days
-        if delta < 0:
+        if due < today:
             badges.append("overdue")
-        elif delta <= 2:
+        elif due <= today.replace() and (due - today).days <= 2:
+            badges.append("due_soon")
+        elif (due - today).days <= 2:
             badges.append("due_soon")
 
     updated = _parse_dt(issue.get("updated"))
