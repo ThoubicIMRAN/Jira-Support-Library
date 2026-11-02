@@ -13,6 +13,7 @@ from services import jira_service
 from services.confluence_client import ConfluenceError
 from services.jira_client import JiraError
 from services.jira_text import build_comment_preview
+from services.jira_dialog_safety import action_plan_lines, unresolved_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,52 @@ def _clear(response_id: str, project_id) -> None:
         st.session_state.pop(f"jira_last_ticket_{project_id}", None)
 
 
+
+_PLACEHOLDER_RE = re.compile(
+    r"@TICKET\b|@SUMMARY\b|@ASSIGNEE\b|@PROJECT\b|@STATUS\b|\[[^\]\n]+\]"
+)
+
+
+def unresolved_placeholders(text: str) -> list[str]:
+    """Tokens that should be filled before post (leave @NAME/@DESIGNATION/@R to personalize)."""
+    skip = {"@NAME", "@DESIGNATION", "@R", "@ROLE", "@DATE"}
+    found = []
+    for m in _PLACEHOLDER_RE.finditer(text or ""):
+        tok = m.group(0)
+        if tok in skip:
+            continue
+        if tok.startswith("[") and tok.endswith("]"):
+            # empty bracket field values already applied; leftover means unfilled
+            pass
+        if tok not in found:
+            found.append(tok)
+    return found
+
+
+def action_plan_lines(
+    *,
+    issue_key: str,
+    internal: bool,
+    time_raw: str,
+    transition_labels: list[str],
+    files_n: int,
+    closing: bool,
+) -> list[str]:
+    plan = [
+        ("Internal comment" if internal else "Customer-visible comment")
+        + f" on **{issue_key}**"
+    ]
+    if transition_labels:
+        plan.append("Transition: " + " → ".join(transition_labels))
+    if (time_raw or "").strip():
+        plan.append(f"Log time: `{(time_raw or '').strip()}`")
+    if files_n:
+        plan.append(f"Attach {files_n} file(s)")
+    if closing:
+        plan.append("Includes resolution / closing notes")
+    return plan
+
+
 @st.dialog("Jira action", width="large")
 def jira_action_dialog(user, project, response_body: str, response_id: str = "x") -> None:
     if not JIRA_ENABLED or not JIRA_BASE_URL:
@@ -89,8 +136,14 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         + (f" · only **{required}-***" if required else " · ⚠️ no Jira link")
     )
 
-    remembered = st.session_state.get(f"jira_last_ticket_{project_id or 'global'}", "")
+    remembered = (
+        st.session_state.pop("mq_prefill_ticket", None)
+        or st.session_state.get(f"jira_last_ticket_{project_id or 'global'}", "")
+        or st.session_state.get("jira_last_ticket_global", "")
+        or ""
+    )
     issue_store = _sk(response_id, "issue")
+    posted_key = _sk(response_id, "posted_ok")
 
     # ---- Compact ticket bar ----
     r1, r2, r3, r4, r5 = st.columns([3.2, 0.9, 0.9, 1.1, 0.9])
@@ -168,7 +221,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 if ad.get("username") and not st.session_state.get(_sk(response_id, "mention_user")):
                     st.session_state[_sk(response_id, "pending_mention_user")] = ad["username"]
     except Exception:
-        pass
+        logger.debug("AD enrich skipped", exc_info=True)
 
     if project_id:
         try:
@@ -223,6 +276,11 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             key=_sk(response_id, "visibility"),
         )
         internal = visibility == "internal"
+        if internal:
+            st.warning("**Internal only** — this comment will not be shared with the customer.")
+        else:
+            st.error("**Visible to customer** — this comment will be shared with the customer.")
+
 
         is_closing = st.checkbox("Closing / resolve", key=_sk(response_id, "closing"))
         resolution_notes = ""
@@ -444,13 +502,17 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     with tab_a:
         t1, t2 = st.columns(2)
         time_raw = t1.text_input("Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time"))
-        transitions = []
-        try:
-            transitions = jira_service.list_transitions_friendly(
-                user.id, issue["key"], jira_project_key=issue.get("project_key")
-            ) or []
-        except Exception:
-            pass
+        cache_k = _sk(response_id, "tr_cache_" + str(issue.get("key") or ""))
+        transitions = st.session_state.get(cache_k) or []
+        if not transitions:
+            try:
+                transitions = jira_service.list_transitions_friendly(
+                    user.id, issue["key"], jira_project_key=issue.get("project_key")
+                ) or []
+                st.session_state[cache_k] = transitions
+            except Exception:
+                logger.exception("list transitions failed")
+                transitions = []
         # Multi-step transitions: order of selection = execution order
         label_to_id = {}
         labels_ordered = []
@@ -534,114 +596,169 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             st.session_state.pop(_sk(response_id, "body_override"), None)
             st.toast("Cleared translation")
 
-        # ---- Post (always visible) ----
-    if st.button("Post to Jira", type="primary", key=_sk(response_id, "post")):
-        with st.spinner("Posting…"):
-            results, errors = [], []
-            try:
-                _assert_allowed(issue["key"], project)
-            except Exception as exc:
-                st.error(_msg(exc))
-                return
-            try:
-                try:
-                    jira_service.add_comment(user.id, issue["key"], preview, internal=internal)
-                except TypeError:
-                    jira_service.add_comment(user.id, issue["key"], preview)
-                results.append("Comment (internal)" if internal else "Comment (customer)")
-            except Exception as exc:
-                errors.append(f"Comment: {_msg(exc)}")
 
+    # ---- Safety: plan + post ----
+    _files = st.session_state.get(_sk(response_id, "files"))  # may be unset until file widget
+    try:
+        files_n = len(uploads) if uploads else 0
+    except NameError:
+        files_n = 0
+    try:
+        _tlabels = [lab for _, lab in transition_chain]
+    except NameError:
+        _tlabels = []
+    try:
+        _internal = internal
+    except NameError:
+        _internal = False
+    try:
+        _time = time_raw or ""
+    except NameError:
+        _time = ""
+    try:
+        _closing = bool(is_closing)
+    except NameError:
+        _closing = False
 
-            # Watchers / participants — always add anyone @mentioned in the comment
-            from services.mention_utils import extract_at_usernames
-            watch_ids = []
-            if st.session_state.get(_sk(response_id, "watch_assignee")) and issue.get("assignee_username"):
-                watch_ids.append(issue["assignee_username"])
-            for part in re.split(r"[,;\s]+", st.session_state.get(_sk(response_id, "extra_mentions")) or ""):
-                part = (part or "").strip().lstrip("@")
-                if part:
-                    watch_ids.append(part)
-            for u in st.session_state.get(_sk(response_id, "auto_watch_from_body")) or []:
-                watch_ids.append(u)
-            # Also scan final preview text for @user / already converted names
-            for u in extract_at_usernames(preview or ""):
-                watch_ids.append(u)
-            # de-dupe preserve order
-            _seen_w = set()
-            _deduped = []
-            for w in watch_ids:
-                wl = (w or "").strip().lower()
-                if wl and wl not in _seen_w:
-                    _seen_w.add(wl)
-                    _deduped.append(w.strip())
-            watch_ids = _deduped
-            if watch_ids:
+    plan = action_plan_lines(
+        issue_key=issue["key"],
+        internal=_internal,
+        time_raw=_time,
+        transition_labels=_tlabels,
+        files_n=files_n,
+        closing=_closing,
+    )
+    st.markdown("**Before you post**")
+    for line in plan:
+        st.caption("• " + line)
+
+    leftover = [t for t in unresolved_placeholders(preview or "") if not str(t).startswith("[~")]
+    import re as _re
+    for m in _re.finditer(r"\[([^\]\n]{1,40})\]", preview or ""):
+        if m.group(1).startswith("~"):
+            continue
+        tok = m.group(0)
+        if tok not in leftover:
+            leftover.append(tok)
+    if leftover:
+        st.warning(
+            "Unresolved placeholders: " + ", ".join(leftover[:8])
+            + ". Fill template fields or remove them before posting."
+        )
+
+    if st.session_state.get(posted_key):
+        st.success("Already posted in this dialog. Open again or click below to post another update.")
+        if st.button("Post another update", key=_sk(response_id, "post_again")):
+            st.session_state.pop(posted_key, None)
+            st.rerun()
+    else:
+        can_post = not leftover
+        if st.button(
+            "Post to Jira",
+            type="primary",
+            key=_sk(response_id, "post"),
+            disabled=not can_post,
+            help="Disabled while placeholders remain" if not can_post else "Submit actions to Jira",
+        ):
+            with st.spinner("Posting…"):
+                results, errors = [], []
+                # Comment first
                 try:
-                    werr = jira_service.add_watchers(user.id, issue["key"], watch_ids)
-                    if werr:
-                        for e in werr:
-                            errors.append(f"Watcher: {e}")
-                    else:
-                        results.append("Watchers updated")
+                    jira_service.add_comment(
+                        user.id, issue["key"], preview or "", internal=_internal
+                    )
+                    results.append("✔ Comment")
                 except Exception as exc:
-                    errors.append(f"Watchers: {_msg(exc)}")
+                    errors.append(f"✖ Comment: {_msg(exc)}")
 
-            for f in uploads or []:
+                # Watchers
                 try:
-                    data = f.getvalue()
-                    if hasattr(jira_service, "add_attachment"):
-                        jira_service.add_attachment(user.id, issue["key"], f.name, data, f.type)
-                    else:
-                        jira_service.get_client_for_user(user.id).add_attachment(
-                            issue["key"], f.name, data, f.type
-                        )
-                    results.append(f"File {f.name}")
+                    watch_ids = []
+                    if st.session_state.get(_sk(response_id, "watch_assignee")):
+                        aid = issue.get("assignee_username") or ""
+                        if aid:
+                            watch_ids.append(aid)
+                    if st.session_state.get(_sk(response_id, "extra_as_watchers"), True):
+                        for part in (st.session_state.get(_sk(response_id, "extra_mentions")) or "").replace(";", ",").split(","):
+                            part = part.strip().lstrip("@")
+                            if part:
+                                watch_ids.append(part)
+                        watch_ids.extend(st.session_state.get(_sk(response_id, "auto_watch_from_body")) or [])
+                    if watch_ids and hasattr(jira_service, "add_watchers"):
+                        werr = jira_service.add_watchers(user.id, issue["key"], watch_ids)
+                        if werr:
+                            errors.append("✖ Watchers: " + "; ".join(werr[:3]))
+                        else:
+                            results.append("✔ Watchers")
                 except Exception as exc:
-                    errors.append(f"File: {_msg(exc)}")
+                    errors.append(f"✖ Watchers: {_msg(exc)}")
 
-            paste_val = st.session_state.get(_sk(response_id, "clipboard_bridge")) or ""
-            if isinstance(paste_val, str) and paste_val.startswith("data:image"):
+                # Attachments
                 try:
-                    header, b64data = paste_val.split(",", 1)
-                    ext = "jpg" if "jpeg" in header or "jpg" in header else "png"
-                    raw_b = base64.b64decode(b64data)
-                    fname = f"paste_{issue['key']}.{ext}"
-                    if hasattr(jira_service, "add_attachment"):
-                        jira_service.add_attachment(user.id, issue["key"], fname, raw_b, f"image/{ext}")
-                    results.append(f"Screenshot {fname}")
-                    st.session_state[_sk(response_id, "pending_clear_clip")] = True
+                    if uploads:
+                        for f in uploads:
+                            data = f.getvalue()
+                            jira_service.add_attachment(
+                                user.id, issue["key"], f.name, data, getattr(f, "type", None)
+                            )
+                            results.append(f"✔ File {f.name}")
+                except NameError:
+                    pass
                 except Exception as exc:
-                    errors.append(f"Paste: {_msg(exc)}")
+                    errors.append(f"✖ File: {_msg(exc)}")
 
-            if (time_raw or "").strip():
-                try:
-                    spent = jira_service.log_work(user.id, issue["key"], time_raw)
-                    results.append(f"Time {spent}")
-                except Exception as exc:
-                    errors.append(f"Worklog: {_msg(exc)}")
-            if transition_chain:
-                try:
-                    if len(transition_chain) == 1:
-                        jira_service.transition_issue(
-                            user.id, issue["key"], transition_chain[0][0],
-                            label=transition_chain[0][1],
-                        )
-                        results.append(f"→ {transition_chain[0][1]}")
-                    else:
-                        applied = jira_service.multi_step_transition(
-                            user.id,
-                            issue["key"],
-                            [x[0] for x in transition_chain],
-                            labels=[x[1] for x in transition_chain],
-                        )
-                        results.append("→ " + " → ".join(applied))
-                except Exception as exc:
-                    errors.append(f"Transition: {_msg(exc)}")
+                paste_val = st.session_state.get(_sk(response_id, "clipboard_bridge")) or ""
+                if isinstance(paste_val, str) and paste_val.startswith("data:image"):
+                    try:
+                        header, b64data = paste_val.split(",", 1)
+                        ext = "jpg" if "jpeg" in header or "jpg" in header else "png"
+                        raw_b = base64.b64decode(b64data)
+                        fname = f"paste_{issue['key']}.{ext}"
+                        if hasattr(jira_service, "add_attachment"):
+                            jira_service.add_attachment(
+                                user.id, issue["key"], fname, raw_b, f"image/{ext}"
+                            )
+                        results.append(f"✔ Screenshot {fname}")
+                        st.session_state[_sk(response_id, "pending_clear_clip")] = True
+                    except Exception as exc:
+                        errors.append(f"✖ Paste: {_msg(exc)}")
 
-            if results:
-                st.success(
-                    f"**Posted to {issue['key']}**\n\n" + "\n".join(f"• {r}" for r in results)
-                )
-            for e in errors:
-                st.error(e)
+                if (_time or "").strip():
+                    try:
+                        spent = jira_service.log_work(user.id, issue["key"], _time)
+                        results.append(f"✔ Time {spent}")
+                    except Exception as exc:
+                        errors.append(f"✖ Worklog: {_msg(exc)}")
+
+                if transition_chain:
+                    try:
+                        if len(transition_chain) == 1:
+                            jira_service.transition_issue(
+                                user.id,
+                                issue["key"],
+                                transition_chain[0][0],
+                                label=transition_chain[0][1],
+                            )
+                            results.append(f"✔ → {transition_chain[0][1]}")
+                        else:
+                            applied = jira_service.multi_step_transition(
+                                user.id,
+                                issue["key"],
+                                [x[0] for x in transition_chain],
+                                labels=[x[1] for x in transition_chain],
+                            )
+                            results.append("✔ → " + " → ".join(applied))
+                    except Exception as exc:
+                        errors.append(f"✖ Transition: {_msg(exc)}")
+
+                if results and not errors:
+                    st.session_state[posted_key] = True
+                if results:
+                    st.success(
+                        f"**Posted to {issue['key']}**\n\n"
+                        + "\n".join(f"• {r}" for r in results)
+                    )
+                for e in errors:
+                    st.error(e)
+                    logger.error("jira post step failed: %s", e)
+

@@ -1,4 +1,4 @@
-"""My Dashboard — assignee queue + charts (all projects)."""
+"""My Dashboard — assignee queue + charts (all projects) + SLA badges."""
 from __future__ import annotations
 
 import logging
@@ -10,6 +10,7 @@ from components.cards import page_header
 from services import jira_service
 from services.jira_service import JiraError
 from services.rate_limit import limit_sensitive_api, RateLimitExceeded
+from services.sla_utils import issue_badges, badge_label
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,8 @@ def render(user) -> None:
     page_header("📊 My Dashboard")
     st.caption(
         "Your open Jira issues (`assignee = currentUser()`), all projects. "
-        "Connect Jira under **Personal settings** if this is empty."
+        "Connect Jira under **Personal settings** if this is empty. "
+        "Click **🎫** to pre-fill that ticket for the next Jira action."
     )
 
     c1, c2 = st.columns([1, 4])
@@ -50,7 +52,12 @@ def render(user) -> None:
         return
 
     dash = jira_service.aggregate_queue_dashboard(issues)
-    st.metric("Open assigned to you", dash["total"])
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Open assigned to you", dash["total"])
+    n_overdue = sum(1 for it in issues if "overdue" in issue_badges(it))
+    n_stale = sum(1 for it in issues if "stale" in issue_badges(it))
+    m2.metric("Overdue", n_overdue)
+    m3.metric("No recent update (14d+)", n_stale)
 
     tab_charts, tab_queue = st.tabs(["Charts", "My Queue"])
 
@@ -59,7 +66,6 @@ def render(user) -> None:
         flat = dash.get("flat_project_status") or []
         if flat:
             df = pd.DataFrame(flat)
-            # pivot: index=project, columns=status, values=count
             pivot = df.pivot_table(
                 index="project", columns="status", values="count", aggfunc="sum", fill_value=0
             )
@@ -91,12 +97,22 @@ def render(user) -> None:
                     st.markdown(f"**{itype}** · {len(rows)}")
                     for it in rows:
                         due = it.get("duedate") or "—"
-                        cols = st.columns([1.4, 3.5, 1.2, 1.2, 0.8])
+                        badges = issue_badges(it)
+                        badge_txt = " ".join(badge_label(b) for b in badges)
+                        cols = st.columns([1.4, 3.2, 1.2, 1.2, 1.4, 0.8])
                         cols[0].markdown(f"`{it['key']}`")
                         cols[1].caption(it.get("summary") or "")
                         cols[2].caption(it.get("status") or "")
                         cols[3].caption(f"Due {due}")
-                        if cols[4].button("🎫", key=f"mq_open_{it['key']}", help="Open in project after picking a library response"):
+                        cols[4].caption(badge_txt or "—")
+                        if cols[5].button(
+                            "🎫",
+                            key=f"mq_open_{it['key']}",
+                            help="Pre-fill this ticket for the next Jira action dialog",
+                        ):
                             st.session_state["mq_prefill_ticket"] = it["key"]
-                            st.toast(f"Ticket {it['key']} saved — open a project response and use 🎫")
+                            st.session_state["jira_last_ticket_global"] = it["key"]
+                            st.toast(
+                                f"Ticket {it['key']} ready — open a library response and click 🎫"
+                            )
                     st.divider()

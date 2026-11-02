@@ -70,7 +70,6 @@ Output ONLY the response text — no title, no markdown fences, no commentary.
 """
 
 
-
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -178,7 +177,6 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
                     logger.warning('Embedding failed for %s: %s', resp.id, exc)
 
         if best is not None:
-            # Detach simple attributes before session closes
             best_id = best.id
             best_title = best.title
             best_body = best.response_body
@@ -186,7 +184,6 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
             best_id = best_title = best_body = None
 
     if best_id and best_score >= threshold:
-        # Rebuild a lightweight namespace so callers don't need a live ORM object
         class _Hit:
             pass
         hit = _Hit()
@@ -198,137 +195,64 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
 
 
 def rewrite(text: str, tone: str) -> str:
-    system = (
-        'You are a support response editor. Rewrite the text in the required style. '
-        'Preserve placeholders @NAME, @DESIGNATION, @ROLE, @R, @DATE. '
-        'Do not invent facts. Output only the rewritten response.\n'
-        + STYLE_RULES
-    )
-    user = f'Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\nText:\n{text}'
-    return chat(system, user)
+    system = STYLE_RULES + '\nTone: ' + TONE_INSTRUCTIONS.get(tone, TONE_INSTRUCTIONS['Professional'])
+    return chat(system, text)
 
 
 def translate(text: str, target_language: str) -> str:
-    """Translate support text accurately while preserving structure and tokens."""
     system = (
-        "You are an expert professional translator for IT support / Jira comments.\n"
-        f"Translate the user's message into {target_language}.\n\n"
-        "STRICT RULES:\n"
-        "1. Output ONLY the translated text — no preface, notes, or quotes.\n"
-        "2. Keep the same paragraph breaks and line structure.\n"
-        "3. NEVER translate or alter placeholders: @NAME, @DESIGNATION, @ROLE, @R, @DATE.\n"
-        "4. Keep Jira/wiki mentions unchanged: [~username].\n"
-        "5. Keep product names, ticket keys (e.g. PROJ-123), emails, and URLs unchanged.\n"
-        "6. Match the original formality (formal support tone if present).\n"
-        "7. Do not add or remove content."
+        STYLE_RULES
+        + f'\nTranslate the support reply into {target_language}. '
+        'Keep placeholders (@NAME, @DESIGNATION, @R) unchanged.'
     )
-    user_msg = (
-        f"Target language: {target_language}\n\n"
-        f"Source text:\n{text}"
-    )
-    return chat(system, user_msg)
-
+    return chat(system, text)
 
 
 def correct_grammar(text: str) -> str:
-    system = (
-        'Fix grammar, spelling and clarity only. '
-        'Do not change meaning or placeholders @NAME, @DESIGNATION, @ROLE, @R. '
-        'Output only the corrected text.'
-    )
-    return chat(system, text)
+    return chat(STYLE_RULES + '\nFix grammar only. Keep meaning and placeholders.', text)
 
 
 def summarize(text: str) -> str:
-    system = (
-        'Summarize this Jira comment for a support engineer. '
-        'Keep key facts, ticket numbers, and action items. Be concise.'
-    )
-    return chat(system, text)
+    return chat('Summarize this support text in 3 short bullets. No intro.', text)
 
 
 def generate_from_ticket(
-    ticket_description: str,
-    project_id: int,
     user_id: int,
-    category_id: int | None = None,
+    project_id: int,
+    ticket_text: str,
     tone: str = 'Professional',
-    save_if_new: bool = True,
-    agent_name: str | None = None,
-    agent_designation: str | None = None,
-    recipient: str = 'Customer',
-) -> dict:
-    """
-    Reuse-first pipeline:
-    1. Semantic search in project library
-    2. If similarity >= threshold → reuse (no new row)
-    3. Else generate a SHORT support reply; optionally save with badge AI
-
-    agent_name / agent_designation are substituted into the final text so the
-    signature shows the real agent (full name and project designation).
-    """
-    matched, score = find_best_match(project_id, ticket_description)
-    source_hash = _hash_text(ticket_description)
+    category_id: int | None = None,
+    save_if_new: bool = False,
+):
+    source_hash = _hash_text(ticket_text)
+    hit, score = find_best_match(project_id, ticket_text)
 
     def _apply_agent(body: str) -> str:
-        """Fill placeholders with the current agent (and optional recipient)."""
-        from datetime import date
-        values = {
-            'NAME': (agent_name or '@NAME').strip() or '@NAME',
-            'DESIGNATION': (agent_designation or '@DESIGNATION').strip() or '@DESIGNATION',
-            'R': (recipient or 'Customer').strip() or 'Customer',
-            'DATE': date.today().isoformat(),
-            'ROLE': 'user',
-        }
-        import re
-        return re.sub(
-            r'@(NAME|DESIGNATION|ROLE|R|DATE)\b',
-            lambda m: values[m.group(1).upper()],
-            body or '',
-            flags=re.I,
-        )
+        return body
 
-    if matched:
+    if hit is not None:
         with SessionLocal() as db:
             db.add(AIGenerationLog(
                 user_id=user_id,
                 project_id=project_id,
                 action='reuse',
                 source_text_hash=source_hash,
-                matched_response_id=matched.id,
+                matched_response_id=hit.id,
                 similarity=score,
-                details=json.dumps({'title': matched.title}, ensure_ascii=False),
             ))
             db.commit()
         return {
             'mode': 'reuse',
-            'text': _apply_agent(matched.response_body),
-            'raw_text': matched.response_body,
-            'response_id': matched.id,
+            'text': _apply_agent(hit.response_body),
+            'raw_text': hit.response_body,
+            'response_id': hit.id,
             'similarity': score,
-            'title': matched.title,
+            'title': hit.title,
         }
 
-    system = (
-        'You write short Jira support replies for a multi-user response library.\n'
-        + STYLE_RULES
-    )
-    user_prompt = (
-        f'Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\n'
-        f'Recipient placeholder: use @R in the greeting (will be filled as "{recipient}").\n'
-        f'Agent name placeholder: @NAME\n'
-        f'Agent designation placeholder: @DESIGNATION\n\n'
-        f'Ticket / issue description:\n{ticket_description.strip()}\n\n'
-        'Write a short status/reply following the style rules.'
-    )
-    body = chat(system, user_prompt)
-    # Strip common model preambles
-    for bad in (
-        'Here is a reusable response template:',
-        'Here is a reusable response template',
-        'Here is the response:',
-        'Here is a response template:',
-    ):
+    system = STYLE_RULES + '\nTone: ' + TONE_INSTRUCTIONS.get(tone, TONE_INSTRUCTIONS['Professional'])
+    body = chat(system, ticket_text)
+    for bad in ('Here is a reusable response template', 'We are pleased to inform you'):
         if body.lower().startswith(bad.lower()):
             body = body[len(bad):].lstrip(' \n:')
 
@@ -346,7 +270,6 @@ def generate_from_ticket(
                 select(func.max(Response.sort_order)).where(Response.category_id == category_id)
             )
             new_id = 'r_' + uuid.uuid4().hex[:16]
-            # Store TEMPLATE with placeholders so other users can personalize later
             row = Response(
                 id=new_id,
                 category_id=category_id,
