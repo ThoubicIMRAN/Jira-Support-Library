@@ -106,17 +106,10 @@ def move_category(category_id, direction, user_id, role="superadmin"):
         return True
 
 
-
 def find_near_duplicates(project_id: int, body: str, *, threshold: float = 0.85, limit: int = 3) -> list[dict]:
     """Semantic near-duplicates of body within a project (for save warnings)."""
     from services.similarity_search import find_near_duplicates as _fn
     return _fn(project_id, body, threshold=threshold, limit=limit)
-
-    try:
-        from services import ai_service
-        return ai_service.find_top_matches(int(project_id), text, limit=limit, threshold=threshold)
-    except Exception:
-        return []
 
 
 def create_response(user_id, role, category_id, title, badge, preview, body):
@@ -284,7 +277,6 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
     except Exception:
         logger.exception("import_project_payload failed")
         raise
-
 
 
 def list_category_tree(project_id: int) -> list[dict]:
