@@ -119,6 +119,8 @@ def find_near_duplicates(
 
 
 def create_response(user_id, role, category_id, title, badge, preview, body):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "create")
     title, badge, preview, body = _clean_fields(title, badge, preview, body)
     try:
@@ -142,6 +144,8 @@ def create_response(user_id, role, category_id, title, badge, preview, body):
 
 
 def update_response(user_id, role, response_id, category_id, title, badge, preview, body):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "edit")
     title, badge, preview, body = _clean_fields(title, badge, preview, body)
     try:
@@ -165,6 +169,8 @@ def update_response(user_id, role, response_id, category_id, title, badge, previ
 
 
 def delete_response(user_id, role, response_id):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "delete")
     try:
         with SessionLocal() as db:
@@ -183,6 +189,8 @@ def delete_response(user_id, role, response_id):
 
 
 def duplicate_response(response_id, user_id, role="superadmin"):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "duplicate")
     with SessionLocal() as db:
         source = db.get(Response, response_id)
@@ -231,6 +239,8 @@ def _normalise_payload(payload):
 
 
 def import_project_payload(project_id, payload, user_id, role="superadmin"):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "import")
     _check_project(user_id, role, project_id)
     categories = _normalise_payload(payload)
@@ -309,6 +319,8 @@ def list_category_tree(project_id: int) -> list[dict]:
 
 
 def create_category(user_id, role, project_id, name, parent_id=None):
+    from services.rate_limit import limit_content_write
+    limit_content_write(user_id)
     _require(role, "manage_content")
     name = (name or "").strip()
     if not name:
@@ -333,9 +345,10 @@ def create_category(user_id, role, project_id, name, parent_id=None):
         row = Category(project_id=project_id, name=name, parent_id=parent_id, sort_order=order)
         db.add(row)
         try:
+            db.flush()
+            audit(db, user_id, "create", "category", row.id, {"name": name, "parent_id": parent_id})
             db.commit()
         except Exception:
             db.rollback()
             raise ContentError("Category already exists or could not be saved.")
-        audit(db, user_id, "create", "category", row.id, {"name": name, "parent_id": parent_id})
         return row.id

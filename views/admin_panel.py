@@ -1,3 +1,4 @@
+from utils.errors import safe_message, log_ignored
 import streamlit as st
 
 from components.cards import page_header
@@ -5,7 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, Project, Category, User, AuditLog, Response, ResponseTag, ResponseTagLink
 from auth import allowed, hash_password
-from services.account_service import admin_set_password, admin_update_user, delete_user, unlock_login
+from services.account_service import admin_set_password, admin_update_user, delete_user, unlock_account, unlock_login
 from config import ROLES
 from utils.validators import valid_hex_color, clean_key, valid_password
 from services.content_service import move_project, move_category
@@ -238,7 +239,7 @@ def render(user, *, embedded: bool = False):
                             st.toast('User updated.')
                             st.rerun()
                         except ValueError as exc:
-                            st.error(str(exc))
+                            st.error(safe_message(exc))
 
                     if can_manage:
                         with st.expander(f"Edit profile · {account.username}", expanded=False):
@@ -255,7 +256,7 @@ def render(user, *, embedded: bool = False):
                                         st.success("Profile saved.")
                                         st.rerun()
                                     except ValueError as exc:
-                                        st.error(str(exc))
+                                        st.error(safe_message(exc))
                             from services.avatar_service import set_avatar, render_avatar_image, AvatarError
                             render_avatar_image(account, width=48)
                             aup = st.file_uploader(
@@ -271,7 +272,7 @@ def render(user, *, embedded: bool = False):
                                     st.success("Avatar updated.")
                                     st.rerun()
                                 except AvatarError as exc:
-                                    st.error(str(exc))
+                                    st.error(safe_message(exc))
 
                     if can_manage:
                         locked = False
@@ -279,11 +280,11 @@ def render(user, *, embedded: bool = False):
                             from services.security_policy import is_locked
                             locked = is_locked(account.username)
                         except Exception:
-                            pass
+                            log_ignored(__name__)
                         if locked:
                             st.warning(f"🔒 **{account.username}** is temporarily locked (too many failed logins).")
                             if st.button("Unlock account", key=f"unlock_{account.id}", type="primary"):
-                                n = unlock_login(account.username)
+                                n = unlock_account(account.username, user.role)
                                 st.success(f"Unlocked. Cleared {n} login attempt record(s).")
                                 st.rerun()
 
@@ -298,7 +299,7 @@ def render(user, *, embedded: bool = False):
                             pw_go = st.form_submit_button("Reset password", type="primary")
                         if pw_go:
                             try:
-                                admin_set_password(account.id, new_pw or "", user.id)
+                                admin_set_password(account.id, new_pw or "", user.id, user.role)
                                 unlock_login(account.username)
                                 st.success(
                                     f"Password set for **{account.username}**. "
@@ -306,9 +307,9 @@ def render(user, *, embedded: bool = False):
                                 )
                                 st.rerun()
                             except ValueError as exc:
-                                st.error(str(exc))
+                                st.error(safe_message(exc))
                             except Exception as exc:
-                                st.error(f"Password reset failed: {exc}")
+                                st.error(f"Password reset failed: {safe_message(exc)}")
 
                         if st.button("🗑️ Delete user", key=f"user_del_{account.id}"):
                             st.session_state[f"confirm_del_user_{account.id}"] = True
@@ -320,14 +321,14 @@ def render(user, *, embedded: bool = False):
                             d1, d2 = st.columns(2)
                             if d1.button("Confirm delete", key=f"user_del_yes_{account.id}", type="primary"):
                                 try:
-                                    delete_user(account.id, user.id)
+                                    delete_user(account.id, user.id, user.role)
                                     st.session_state.pop(f"confirm_del_user_{account.id}", None)
                                     st.success("User deleted. Audit history preserved.")
                                     st.rerun()
                                 except ValueError as exc:
-                                    st.error(str(exc))
+                                    st.error(safe_message(exc))
                                 except Exception as exc:
-                                    st.error(f"Delete failed: {exc}")
+                                    st.error(f"Delete failed: {safe_message(exc)}")
                             if d2.button("Cancel", key=f"user_del_no_{account.id}"):
                                 st.session_state.pop(f"confirm_del_user_{account.id}", None)
                                 st.rerun()

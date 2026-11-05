@@ -1,5 +1,6 @@
 """Unified Personal Settings — appearance, layout, account, Jira connection."""
 from __future__ import annotations
+from utils.errors import safe_message, log_ignored
 from config import APP_NAME, APP_VERSION, APP_BUILD_LABEL
 
 import streamlit as st
@@ -29,7 +30,7 @@ def render(user) -> None:
         try:
             st.caption(APP_BUILD_LABEL)
         except Exception:
-            pass
+            log_ignored(__name__)
         st.caption("Open **What's New** in the sidebar for full release notes.")
 
 
@@ -155,4 +156,4 @@ def _render_snipeit_section(user):
         st.subheader("Snipe-IT")
         snipeit_settings.render(user, embedded=True)
     except Exception as exc:
-        st.caption(f"Snipe-IT settings unavailable: {exc}")
+        st.caption(f"Snipe-IT settings unavailable: {safe_message(exc)}")

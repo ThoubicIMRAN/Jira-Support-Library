@@ -15,7 +15,7 @@ _lock = threading.Lock()
 _buckets: dict[str, Deque[float]] = defaultdict(deque)
 
 
-class RateLimitExceeded(Exception):
+class RateLimitExceeded(ValueError):
     def __init__(self, message: str = "Too many attempts. Try again later.", *, retry_after: int = 60):
         super().__init__(message)
         self.retry_after = retry_after
@@ -66,6 +66,14 @@ def clear_rate_limit(key: str) -> None:
 
 
 # Presets used by the app
+def limit_admin_action(actor_id: int) -> None:
+    check_rate_limit(f"admin:{actor_id}", max_calls=30, window_seconds=60)
+
+
+def limit_content_write(user_id: int) -> None:
+    check_rate_limit(f"content:{user_id}", max_calls=60, window_seconds=60)
+
+
 def limit_login(identity: str, client_ip: str = "") -> None:
     # Per identity: 10 / 15 min; per IP: 30 / 15 min
     check_rate_limit(f"login:id:{identity.lower()}", max_calls=10, window_seconds=900)

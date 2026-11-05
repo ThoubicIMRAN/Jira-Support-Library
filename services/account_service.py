@@ -1,3 +1,4 @@
+from utils.errors import log_ignored
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from utils.timeutil import as_utc
@@ -103,8 +104,16 @@ def register_user(username, full_name, email, password, designation='Support Eng
         return True
 
 
-def admin_set_password(target_user_id: int, new_password: str, actor_id: int) -> None:
+def _require_superadmin(actor_role: str | None) -> None:
+    if (actor_role or "") != "superadmin":
+        raise PermissionError("Only a superadmin can do that.")
+
+
+def admin_set_password(target_user_id: int, new_password: str, actor_id: int, actor_role: str | None = None) -> None:
     """Superadmin sets a temporary password; user must change on next login."""
+    from services.rate_limit import limit_admin_action
+    _require_superadmin(actor_role)
+    limit_admin_action(actor_id)
     from utils.validators import valid_password
     from services.session_service import revoke_user_sessions
     from services.rate_limit import limit_password_change
@@ -137,6 +146,13 @@ def admin_set_password(target_user_id: int, new_password: str, actor_id: int) ->
     revoke_user_sessions(target_user_id)
 
 
+def unlock_account(identity: str, actor_role: str | None) -> int:
+    """UI entry point: only admins and superadmins may unlock an account."""
+    if (actor_role or "") not in ("admin", "superadmin"):
+        raise PermissionError("Administrator access required.")
+    return unlock_login(identity)
+
+
 def unlock_login(identity: str) -> int:
     """Clear recent failed login attempts so the account is no longer locked."""
     from database import LoginAttempt
@@ -153,14 +169,18 @@ def unlock_login(identity: str) -> int:
         return result.rowcount or 0
 
 
-def delete_user(target_user_id: int, actor_id: int) -> None:
+def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = None) -> None:
     """Delete a user account while preserving audit history.
 
+    Only a superadmin may call this (checked here, not only in the UI).
     - AuditLog.user_id set to NULL (logs kept)
     - Other nullable FKs nulled
     - CASCADE children removed with the user
     - User row deleted
     """
+    from services.rate_limit import limit_admin_action
+    _require_superadmin(actor_role)
+    limit_admin_action(actor_id)
     from sqlalchemy import delete as sa_delete, update as sa_update
     from database import (
         AuditLog,
@@ -222,7 +242,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
                 .values(invited_by=None)
             )
         except Exception:
-            pass
+            log_ignored(__name__)
         try:
             db.execute(
                 sa_update(OAuthTransaction)
@@ -230,7 +250,7 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
                 .values(link_user_id=None)
             )
         except Exception:
-            pass
+            log_ignored(__name__)
         try:
             from database import Announcement, MaintenanceWindow
             for Model, col in (
@@ -242,13 +262,13 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
                         sa_update(Model).where(getattr(Model, col) == uid).values(**{col: None})
                     )
         except Exception:
-            pass
+            log_ignored(__name__)
         try:
             db.execute(
                 sa_update(BulkPostLog).where(BulkPostLog.user_id == uid).values(user_id=None)
             )
         except Exception:
-            pass
+            log_ignored(__name__)
 
         # Explicit cleanup of identity-related rows (CASCADE should handle, but be safe)
         for Model in (
@@ -269,13 +289,13 @@ def delete_user(target_user_id: int, actor_id: int) -> None:
             try:
                 db.execute(sa_delete(Model).where(Model.user_id == uid))
             except Exception:
-                pass
+                log_ignored(__name__)
 
         try:
             from database import UserSnipeITCredential
             db.execute(sa_delete(UserSnipeITCredential).where(UserSnipeITCredential.user_id == uid))
         except Exception:
-            pass
+            log_ignored(__name__)
 
         # Login attempts by username
         db.execute(sa_delete(LoginAttempt).where(LoginAttempt.identity == username.lower()))

@@ -16,6 +16,8 @@ from typing import Any, Iterable, Sequence
 
 import streamlit as st
 
+from utils.errors import log_ignored
+
 from components.cards import page_header
 
 from services.workspace_service import (
@@ -182,8 +184,8 @@ def _response_tile(
             try:
                 record_view(user.id, row.id)
             except Exception:  # noqa: BLE001
-                # A failed view record shouldn't block navigation.
-                pass
+                # A failed view record shouldn't block navigation, but it must be logged.
+                log_ignored(__name__)
             goto(PAGE_PROJECT, project_id=project.id)
 
 

@@ -10,6 +10,7 @@ Public API:
 """
 from __future__ import annotations
 
+from utils.errors import safe_message
 import streamlit as st
 
 from config import APP_NAME, APP_VERSION
@@ -219,10 +220,10 @@ def render_profile_form(user) -> None:
                     st.session_state[SESSION_FLASH] = "Profile photo updated."
                     st.rerun()
                 except AvatarError as exc:
-                    st.error(str(exc))
+                    st.error(safe_message(exc))
                 except Exception as exc:
                     # Surface DB/schema errors so ops can migrate
-                    st.error(f"Could not save photo: {exc}")
+                    st.error(f"Could not save photo: {safe_message(exc)}")
         if b2.button("Remove photo", key=f"avatar_clr_{user.id}"):
             try:
                 clear_avatar(
@@ -232,7 +233,7 @@ def render_profile_form(user) -> None:
                 st.session_state[SESSION_FLASH] = "Profile photo removed."
                 st.rerun()
             except Exception as exc:
-                st.error(f"Could not remove photo: {exc}")
+                st.error(f"Could not remove photo: {safe_message(exc)}")
     st.divider()
 
     projects, overrides = _load_projects_and_overrides(user.id)

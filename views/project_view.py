@@ -6,6 +6,7 @@ validates input, uses one transaction and writes the audit trail.
 """
 from __future__ import annotations
 
+from utils.errors import safe_message, log_ignored
 import json
 import logging
 from typing import Sequence
@@ -102,7 +103,7 @@ def _category_filter_options(project_id: int) -> list[tuple[str, int | None]]:
 
 def _save_error(exc: Exception) -> None:
     if isinstance(exc, ContentError):
-        st.error(str(exc))
+        st.error(safe_message(exc))
     else:
         st.error("Could not save the change. Please try again.")
 
@@ -301,7 +302,7 @@ def _render_categories(user, project, categories: Sequence[Category], term: str,
                     if _p:
                         _sec = f"{_p.name} / {category.name}"
             except Exception:
-                pass
+                log_ignored(__name__)
         section_header(_sec, len(rows), project.color)
         columns = st.columns(columns_n, gap="medium")
         for index, row in enumerate(rows):

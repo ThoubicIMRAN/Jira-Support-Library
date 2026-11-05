@@ -1,6 +1,7 @@
 """Bulk Jira comment dialog + bulk-post log (B4)."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import html
 import logging
 
@@ -113,7 +114,7 @@ def bulk_comment_dialog(user, project=None) -> None:
                     st.session_state["bulk_result"] = post_bulk_comment(
                         user.id, keys, body, linked or "", time_raw=time_raw, internal=internal)
                 except BulkError as exc:
-                    st.error(str(exc))
+                    st.error(safe_message(exc))
                     return
                 except Exception:  # noqa: BLE001
                     logger.exception("Bulk comment run failed")

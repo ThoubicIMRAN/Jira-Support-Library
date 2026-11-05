@@ -1,6 +1,7 @@
 """Jira action dialog — Package 2 single-screen layout + people pickers + safety."""
 from __future__ import annotations
 
+from utils.errors import log_ignored
 import re
 
 import base64
@@ -37,7 +38,7 @@ def _linked_prefix(project) -> str | None:
             if key and str(key).strip():
                 return str(key).strip().upper()
         except Exception:
-            pass
+            log_ignored(__name__)
     return (getattr(project, "key", None) or "").strip().upper() or None
 
 
@@ -48,7 +49,7 @@ def _ticket_prefix(key_or_url: str) -> str:
         if keys:
             return keys[0].split("-", 1)[0].upper()
     except Exception:
-        pass
+        log_ignored(__name__)
     text = (key_or_url or "").strip().upper()
     return text.split("-", 1)[0] if "-" in text else ""
 
@@ -203,14 +204,14 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                             record_vote(user.id, str(sug["id"]), issue["key"], "up")
                             st.toast("Thanks")
                         except Exception:
-                            pass
+                            log_ignored(__name__)
                     if fb2.button("👎", key=_sk(response_id, f"dn_{sug['id']}")):
                         try:
                             from services.suggestion_feedback import record_vote
                             record_vote(user.id, str(sug["id"]), issue["key"], "down")
                             st.toast("Thanks")
                         except Exception:
-                            pass
+                            log_ignored(__name__)
 
     body_template = st.session_state.get(_sk(response_id, "body_override")) or response_body
 
@@ -522,7 +523,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             context=ticket_ctx,
         )
     except Exception:
-        pass
+        log_ignored(__name__)
 
     _ml = st.session_state.get(_sk(response_id, "mention_line")) or ""
     if _ml:
@@ -536,7 +537,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             + " " + (st.session_state.get(_sk(response_id, "extra_mentions")) or "")
         )
     except Exception:
-        pass
+        log_ignored(__name__)
 
     with st.expander("Preview", expanded=True):
         st.code(preview, language=None, wrap_lines=True)
@@ -707,7 +708,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                             )
                             results.append(f"✔ File {f.name}")
                 except NameError:
-                    pass
+                    log_ignored(__name__)
                 except Exception as exc:
                     errors.append(f"✖ File: {_msg(exc)}")
 

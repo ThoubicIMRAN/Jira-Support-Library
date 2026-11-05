@@ -246,12 +246,17 @@ class JiraClient:
     ) -> dict:
         api = "3" if self.product == "cloud" else "2"
         url = self._url(f"/rest/api/{api}/issue/{key}/attachments")
-        headers = {"Accept": "application/json", "X-Atlassian-Token": "no-check"}
+        # The session default "Content-Type: application/json" would stop requests from adding the
+        # multipart boundary (Jira then answers HTTP 415). None removes that default for this call.
+        headers = {"Accept": "application/json", "X-Atlassian-Token": "no-check", "Content-Type": None}
         auth = self._session.auth
         bearer = self._session.headers.get("Authorization")
         if bearer:
             headers["Authorization"] = bearer
-        files = {"file": (filename, content, content_type or "application/octet-stream")}
+        import mimetypes
+
+        guessed = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        files = {"file": (filename, content, guessed)}
         resp = self._session.post(
             url, headers=headers, files=files, auth=auth, timeout=self.timeout
         )
