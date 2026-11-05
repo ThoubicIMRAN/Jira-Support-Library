@@ -7,10 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from config import AI_SIMILARITY_THRESHOLD
-from database import Category, SessionLocal
+from database import Category, ResponseEmbedding, SessionLocal
 from services import ai_service
 
 logger = logging.getLogger(__name__)
+MAX_NEW_EMBEDDINGS = 8
 
 
 def find_top_matches(
@@ -31,14 +32,20 @@ def find_top_matches(
         return []
 
     scored: list[tuple[float, str, str, str]] = []
+    new_embeddings = 0                      # bound the Ollama calls one ticket load can trigger
     with SessionLocal() as db:
         categories = db.scalars(
             select(Category)
             .options(selectinload(Category.responses))
             .where(Category.project_id == project_id)
         ).all()
+        cached_ids = set(db.scalars(select(ResponseEmbedding.response_id)).all())
         for cat in categories:
             for resp in cat.responses:
+                if resp.id not in cached_ids:
+                    if new_embeddings >= MAX_NEW_EMBEDDINGS:
+                        continue
+                    new_embeddings += 1
                 try:
                     vec = ai_service.ensure_embedding(db, resp)
                     score = ai_service._cosine(query_vec, vec)

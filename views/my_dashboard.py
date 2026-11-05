@@ -1,6 +1,7 @@
 """My Dashboard — assignee queue + charts (all projects) + SLA badges."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import logging
 
 import streamlit as st
@@ -35,10 +36,10 @@ def render(user) -> None:
                 issues = jira_service.fetch_my_queue(user.id, max_results=int(max_n))
             st.session_state[cache_key] = issues
         except RateLimitExceeded as exc:
-            st.warning(str(exc))
+            st.warning(safe_message(exc))
             issues = st.session_state.get(cache_key) or []
         except JiraError as exc:
-            st.error(str(exc))
+            st.error(safe_message(exc))
             issues = st.session_state.get(cache_key) or []
         except Exception:
             logger.exception("My queue load failed")

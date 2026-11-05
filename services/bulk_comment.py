@@ -85,6 +85,8 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
     pause = BULK_DELAY_SECONDS if delay is None else delay
     if not (body or "").strip():
         raise BulkError("Comment text is empty.")
+    from services.rate_limit import limit_bulk_run
+    limit_bulk_run(user_id)
     prefix, keys = validate_same_project(keys, required_prefix)
     if len(keys) > limit:
         raise BulkError(f"Bulk posting is limited to {limit} tickets at a time (you entered {len(keys)}).")

@@ -1,6 +1,7 @@
 """High-level Jira operations for the Support Library app."""
 from __future__ import annotations
 
+from utils.errors import log_ignored
 import logging
 import re
 from datetime import datetime, timezone
@@ -272,7 +273,7 @@ def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = Fal
     try:
         remember_last_comment(user_id, body)
     except Exception:
-        pass
+        log_ignored(__name__)
 
 
 
@@ -453,7 +454,7 @@ def remember_last_comment(user_id: int, body: str) -> None:
         import streamlit as st
         st.session_state[f"jira_last_comment_{user_id}"] = body
     except Exception:
-        pass
+        log_ignored(__name__)
 
 
 def get_last_comment(user_id: int) -> str:
@@ -472,7 +473,15 @@ def find_similar_open_issues(user_id: int, issue: dict, *, limit: int = 5) -> li
     if not project_key or not summary:
         return []
     # Use first few significant words for ~jql
-    words = [w for w in summary.replace('"', " ").split() if len(w) > 3][:4]
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,39}", project_key) or not _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]+-\d+", key):
+        return []
+
+    def _lit(value: str) -> str:
+        """Escape a JQL string literal (backslash first, then quote)."""
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    words = [_lit(w) for w in summary.split() if len(w) > 3 and w.isprintable()][:4]
     if not words:
         return []
     text_clause = " ".join(words)
@@ -526,6 +535,8 @@ def suggest_library_for_issue(user_id: int, project_id: int, issue: dict) -> lis
 
 def add_watchers(user_id: int, issue_key: str, identities: list[str]) -> list[str]:
     """Add watchers by username (Server/DC) or accountId (Cloud). Returns list of errors."""
+    from services.rate_limit import limit_jira_write
+    limit_jira_write(user_id)
     client = get_client_for_user(user_id)
     errors: list[str] = []
     for ident in identities:

@@ -1,6 +1,7 @@
 """Per-user Confluence PAT; base URL from admin env CONFLUENCE_BASE_URL."""
 from __future__ import annotations
 
+from utils.errors import log_ignored
 import logging
 from typing import Any
 
@@ -148,7 +149,7 @@ def test_connection(user_id: int, page_url: str | None = None) -> dict[str, Any]
             try:
                 result["user"] = resp.json()
             except Exception:
-                pass
+                log_ignored(__name__)
             return result
     except requests.RequestException as exc:
         result["attempts"].append(f"Bearer: network {exc}")

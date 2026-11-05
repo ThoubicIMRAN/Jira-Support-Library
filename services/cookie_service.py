@@ -24,6 +24,7 @@ Optional local-only fallback:
 """
 from __future__ import annotations
 
+from utils.errors import log_ignored
 import logging
 import os
 from typing import Optional
@@ -108,7 +109,7 @@ def get_session_cookie() -> Optional[str]:
             if qp and str(qp).strip():
                 return str(qp).strip()
         except Exception:
-            pass
+            log_ignored(__name__)
     return None
 
 
@@ -191,4 +192,4 @@ def delete_session_cookie() -> None:
             try:
                 st.query_params.pop(SESSION_QP, None)
             except Exception:
-                pass
+                log_ignored(__name__)

@@ -1,6 +1,7 @@
 """Support: announcements, feedback; maintenance = superadmin only; announcements = admin+."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import logging
 
 import streamlit as st
@@ -57,7 +58,7 @@ def render(user) -> None:
                     st.success(f"Submitted (#{fid}). Managers and admins are notified.")
                 except Exception as exc:
                     logger.exception("feedback")
-                    st.error(str(exc))
+                    st.error(safe_message(exc))
 
     if is_admin and len(tab_objs) > 2:
         with tab_objs[2]:

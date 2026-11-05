@@ -1,6 +1,7 @@
 """Jira + Confluence — matching two-column layout."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import logging
 
 import streamlit as st
@@ -68,7 +69,7 @@ def render_jira_settings(user) -> None:
                         st.toast(f"Jira connected: {info.get('display_name')}", icon="✅")
                         st.rerun()
                     except JiraError as exc:
-                        st.error(str(exc))
+                        st.error(safe_message(exc))
                     except Exception:
                         logger.exception("Jira connect")
                         st.error("Jira connection failed.")
@@ -123,9 +124,9 @@ def render_jira_settings(user) -> None:
                         else:
                             st.error(result.get("error") or "Failed")
                     except ConfluenceError as exc:
-                        st.error(str(exc))
+                        st.error(safe_message(exc))
                     except Exception as exc:
-                        st.error(str(exc))
+                        st.error(safe_message(exc))
         if conf.get("configured") and c2.button("Disconnect", key="conf_clear"):
             confluence_service.disconnect(user.id)
             st.rerun()

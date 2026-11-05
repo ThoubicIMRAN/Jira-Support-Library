@@ -1,6 +1,7 @@
 """Sign-in, sign-up, password reset, and invitation acceptance."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import logging
 import time
 
@@ -217,7 +218,7 @@ def _render_sign_up() -> None:
                 )
                 st.success("Account created. Switch to **Sign in** and log in.")
             except ValueError as exc:
-                st.error(str(exc))
+                st.error(safe_message(exc))
             except Exception:
                 logger.exception("Registration failed")
                 st.error("Registration failed. Please try again.")

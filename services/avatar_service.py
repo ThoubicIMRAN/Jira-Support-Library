@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from database import SessionLocal, User
+import html
+
+from services.image_service import process_image
 from services.rate_limit import limit_avatar_upload
 
 ALLOWED_MIME = {
@@ -30,9 +33,7 @@ def set_avatar(
     callers), only the same user_id is allowed via a soft check when both
     match the session; prefer always passing actor_*.
     """
-    mime = (mime or "").split(";")[0].strip().lower()
-    if mime not in ALLOWED_MIME:
-        raise AvatarError("Only PNG, JPEG, or WebP images are allowed.")
+    # the browser-supplied MIME type is ignored: the real format is detected from the bytes
     if not data or len(data) > MAX_BYTES:
         raise AvatarError(f"Image must be under {MAX_BYTES // 1024} KB.")
 
@@ -49,8 +50,11 @@ def set_avatar(
         user = db.get(User, user_id)
         if not user:
             raise AvatarError("User not found.")
-        user.avatar_data = data
-        user.avatar_mime = mime
+        try:
+            user.avatar_data = process_image(data, max_bytes=MAX_BYTES, size=(256, 256), square=True)
+        except ValueError as exc:
+            raise AvatarError(str(exc)) from None
+        user.avatar_mime = "image/png"
         user.avatar_url = None  # prefer DB blob
         db.commit()
 
@@ -87,14 +91,14 @@ def render_avatar_image(user, *, width: int = 64) -> None:
     try:
         if getattr(user, "avatar_data", None):
             st.image(bytes(user.avatar_data), width=width)
-        elif getattr(user, "avatar_url", None):
+        elif str(getattr(user, "avatar_url", "") or "").startswith("https://"):
             st.image(user.avatar_url, width=width)
         else:
             initials = "".join(p[0] for p in (user.full_name or user.username or "?").split()[:2]).upper()
             st.markdown(
                 f'<div style="width:{width}px;height:{width}px;border-radius:50%;'
                 f'background:#2563eb;color:#fff;display:flex;align-items:center;'
-                f'justify-content:center;font-weight:700;font-size:{width//3}px">{initials}</div>',
+                f'justify-content:center;font-weight:700;font-size:{width//3}px">{html.escape(initials)}</div>',
                 unsafe_allow_html=True,
             )
     except Exception:

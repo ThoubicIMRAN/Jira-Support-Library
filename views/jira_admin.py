@@ -1,6 +1,7 @@
 """Admin: map app projects → Jira keys, transition labels, multi-step chains."""
 from __future__ import annotations
 
+from utils.errors import safe_message
 import logging
 
 import streamlit as st
@@ -57,7 +58,7 @@ def render_jira_admin(user) -> None:
                         st.toast(f"Linked {row['name']} → {key_val.upper()}")
                         st.rerun()
                     except ValueError as exc:
-                        st.error(str(exc))
+                        st.error(safe_message(exc))
 
     with tab_alias:
         st.markdown(
@@ -96,7 +97,7 @@ def render_jira_admin(user) -> None:
                     st.success("Alias saved.")
                     st.rerun()
                 except ValueError as exc:
-                    st.error(str(exc))
+                    st.error(safe_message(exc))
 
     with tab_chain:
         st.markdown(
@@ -139,4 +140,4 @@ def render_jira_admin(user) -> None:
                     st.success("Chain saved.")
                     st.rerun()
                 except ValueError as exc:
-                    st.error(str(exc))
+                    st.error(safe_message(exc))
