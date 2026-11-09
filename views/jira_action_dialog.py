@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from typing import Iterable
 
 import streamlit as st
 
