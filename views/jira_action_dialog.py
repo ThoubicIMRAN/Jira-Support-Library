@@ -146,7 +146,7 @@ def _collect_watch_ids(response_id: str, issue: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
-@st.dialog("Jira action", width="large")
+@st.dialog("Jira action")
 def jira_action_dialog(user, project, response_body: str, response_id: str = "x") -> None:
     if not JIRA_ENABLED or not JIRA_BASE_URL:
         st.error("Jira is not configured.")
@@ -606,10 +606,27 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                 except Exception as exp:
                     st.error(_msg(exp))
 
-    # ---------------- preview ----------------
+    # ---------------- template fields + preview ----------------
+    from services.template_fields import apply_bracket_fields, extract_bracket_fields
+
     body_template = (
         st.session_state.get(_sk(response_id, "body_override")) or response_body
     )
+    bracket_labels = extract_bracket_fields(body_template)
+    field_values: dict[str, str] = {}
+    if bracket_labels:
+        st.markdown("##### Template fields")
+        st.caption("Fill each field used in the library template. Required before posting.")
+        cols = st.columns(2) if len(bracket_labels) > 1 else [st]
+        for i, label in enumerate(bracket_labels):
+            key = _sk(response_id, "tf_" + label.lower().replace(" ", "_")[:40])
+            with cols[i % len(cols)]:
+                field_values[label] = st.text_input(
+                    label,
+                    key=key,
+                    placeholder=f"Value for [{label}]",
+                )
+
     reporter = issue.get("reporter") or "Customer"
     preview = build_comment_preview(
         body_template,
@@ -641,6 +658,10 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     except Exception:
         log_ignored(__name__)
 
+    filled = {k: v for k, v in field_values.items() if (v or "").strip()}
+    if filled:
+        preview = apply_bracket_fields(preview, filled, leave_missing=True)
+
     _ml = st.session_state.get(_sk(response_id, "mention_line")) or ""
     if _ml:
         preview = (preview or "").rstrip() + "\n\n" + _ml
@@ -657,7 +678,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
 
     st.markdown("##### Preview")
     st.code(preview or "", language=None, wrap_lines=True)
-    st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · [custom fields]")
+    st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · fill [custom fields] above")
 
     # ---------------- safety: plan + placeholders ----------------
     st.markdown("##### Before you post")

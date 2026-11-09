@@ -115,8 +115,17 @@ def normalize_hyperlink_paste(raw: str) -> str:
     return s
 
 
-def apply_bracket_fields(text: str, values: Mapping[str, str] | None) -> str:
-    """Replace [label] with normalized values. Missing -> empty string."""
+def apply_bracket_fields(
+    text: str,
+    values: Mapping[str, str] | None,
+    *,
+    leave_missing: bool = False,
+) -> str:
+    """Replace [label] with normalized values.
+
+    By default missing labels become empty string. With leave_missing=True,
+    unfilled labels stay as [label] (dialog preview until the user types).
+    """
     if not text:
         return text or ""
     values = values or {}
@@ -129,6 +138,9 @@ def apply_bracket_fields(text: str, values: Mapping[str, str] | None) -> str:
         label = (m.group(1) or "").strip()
         if _WIKI_MENTION_RE.match(label):
             return m.group(0)
-        return str(norm.get(label.lower(), ""))
+        key = label.lower()
+        if key not in norm:
+            return m.group(0) if leave_missing else ""
+        return str(norm[key])
 
     return _BRACKET_RE.sub(repl, text)
