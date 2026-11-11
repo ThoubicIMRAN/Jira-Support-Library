@@ -79,7 +79,7 @@ jobs:
 
       - name: Image tags and labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           # Stable channel (latest / stable / semver) moves only on v*.*.* tags.
