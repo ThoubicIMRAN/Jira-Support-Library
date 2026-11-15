@@ -1,61 +1,59 @@
-"""What's New — release notes for agents and admins."""
+"""What's New — release notes for agents and admins.
+
+Source of truth: docs/releases.json (update on every release).
+See docs/RELEASE_PROCESS.md and docs/BUGFIXES.md.
+"""
 from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
 
 import streamlit as st
 
 from components.cards import page_header
 from config import APP_NAME, APP_VERSION
 
-# Newest first
-RELEASES: list[dict] = [
-    {
-        "version": "2.3.0",
-        "date": "2026-11-02",
-        "title": "Security hardening, dialog UX, transition presets",
-        "items": [
-            "**Security (H1–H5)** — block APPLY scripts in CI; RBAC inside services; rate limits on Jira/bulk/AI/avatar; revoke sessions on password/role change; Docker binds app to localhost, Ollama internal-only",
-            "**Jira dialog Package 2** — single-screen layout (no tabs); people search with Wiki/+Watch; reporter/assignee chips; visibility + action plan + placeholder guard + double-post guard",
-            "**Transition chains Package 3** — admin-named multi-step presets; one-click fill on dialog; friendly labels still apply",
-            "**My Queue / dashboard** — SLA badges, charts, 🎫 pre-fill ticket into dialog",
-            "**Duplicates & suggestions** — semantic near-duplicates on save; ranked library suggestions on ticket load",
-        ],
-    },
-    {
-        "version": "2.2.0",
-        "date": "2026-10-29",
-        "title": "My Dashboard, avatars, multi-step transitions",
-        "items": [
-            "**My Dashboard** — open issues assigned to you (all projects), charts by project/status and due date",
-            "**Profile photo** — upload PNG/JPEG/WebP (max 500 KB), stored encrypted-at-rest path in DB",
-            "**Admin user edit** — name, email, designation, role, avatar from Admin → Users",
-            "**Categories** — edit name, parent (sub-category), sort order inline",
-            "**Jira dialog** — reporter/assignee/status row, validator field, multi-select transitions in order",
-            "**Multi-step transitions** — chain statuses in one Post (e.g. To Do → In Progress → Resolved)",
-            "**Security** — login rate limits, stronger password policy, production FERNET_KEY gate",
-            f"**Version** — Application info shows **{APP_VERSION}**",
-        ],
-    },
-    {
-        "version": "2.1.x",
-        "date": "2026-10",
-        "title": "Library + Jira / Confluence core",
-        "items": [
-            "Command library with projects, categories, responses, AI approval",
-            "Jira comment / log time / transition with per-user tokens",
-            "Template `[bracket]` fields and @mentions → watchers",
-            "Confluence resolution notes, bulk comment, health checks",
-        ],
-    },
-]
+logger = logging.getLogger(__name__)
+
+_RELEASES_PATH = Path(__file__).resolve().parent.parent / "docs" / "releases.json"
+
+
+def _load_releases() -> list[dict]:
+    try:
+        data = json.loads(_RELEASES_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        logger.exception("Failed to load %s", _RELEASES_PATH)
+    return []
 
 
 def render(user) -> None:
     page_header("✨ What's New")
     st.caption(f"{APP_NAME} · current version **{APP_VERSION}**")
+    st.caption("Release notes are maintained in `docs/releases.json`. Bug fixes: `docs/BUGFIXES.md`.")
 
-    for rel in RELEASES:
+    releases = _load_releases()
+    if not releases:
+        st.info("No release notes found. Add entries to `docs/releases.json`.")
+        return
+
+    for rel in releases:
+        version = rel.get("version") or "?"
+        date = rel.get("date") or ""
+        title = rel.get("title") or ""
+        features = rel.get("features") or rel.get("items") or []
+        fixes = rel.get("fixes") or []
         with st.container(border=True):
-            st.markdown(f"### v{rel['version']} · {rel['date']}")
-            st.markdown(f"**{rel['title']}**")
-            for item in rel["items"]:
-                st.markdown(f"- {item}")
+            st.markdown(f"### v{version} · {date}")
+            if title:
+                st.markdown(f"**{title}**")
+            if features:
+                st.markdown("**Features**")
+                for item in features:
+                    st.markdown(f"- {item}")
+            if fixes:
+                st.markdown("**Bug fixes**")
+                for item in fixes:
+                    st.markdown(f"- {item}")
