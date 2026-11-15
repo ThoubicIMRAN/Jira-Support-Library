@@ -54,3 +54,7 @@ echo YOUR_PAT | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin   # PA
 docker compose pull app && docker compose up -d
 ```
 The image contains no configuration, secrets or data: everything comes from `.env` and the database volume at runtime.
+
+## Launch checklist
+See **`docs/LAUNCH_CHECKLIST.md`** (privacy/terms, HTTPS, cookies, robots, CTA).  
+Production TLS: **`docs/DEPLOY.md`**.
