@@ -2,6 +2,8 @@
 
 Internal Streamlit app for reusable Jira/IT-support responses. UI follows the **Jira Command Library** prototype.
 
+**Release notes:** [CHANGELOG.md](CHANGELOG.md) · [docs/BUGFIXES.md](docs/BUGFIXES.md) · [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) · in-app **What's New** (`docs/releases.json`).
+
 ## Run
 ```bash
 cp .env.example .env            # set APP_SECRET_KEY and BOOTSTRAP_ADMIN_PASSWORD
@@ -23,13 +25,19 @@ Rule: a stylesheet must not contain the `<` character (the HTML sanitiser drops 
 
 ## Features
 - **Roles:** `user` (view/copy/AI, submits AI text for approval) · `manager` (+create/edit/duplicate, saves to library, approves AI) · `admin` (+import/delete/manage content) · `superadmin` (all, plus user create/role/reset-password/delete).
-- **Jira integration** (`services/jira_*.py`, `views/jira_*.py`): per-user Cloud API token or Server PAT (Fernet-encrypted), library project → Jira key links, transition aliases, and the 🎫 dialog on each response (comment with reporter swap, log time, transition). Configure `JIRA_BASE_URL` (HTTPS in production). Set the connection under Personal settings; link projects and aliases under Admin Settings.
+- **Jira integration** (`services/jira_*.py`, `views/jira_*.py`): per-user Cloud API token or Server PAT (Fernet-encrypted), library project → Jira key links, transition aliases, and the 🎫 dialog on each response (comment with reporter swap, log time, transition, people search, transition-chain presets). Configure `JIRA_BASE_URL` (HTTPS in production).
+- **Jira dialog UX:** single-screen layout, reporter/assignee chips, placeholder & double-post guards, fillable `[bracket]` template fields.
+- **My Dashboard / Queue:** open issues assigned to you, charts by project/status and due date, ticket pre-fill into the dialog.
 - **AI approval:** AI-generated text from `user` role goes to a pending queue; managers/admins approve or reject (checked server-side).
-- **Bulk comment** (`services/bulk_comment.py`, `views/bulk_jira.py`): 📣 button on the project page. One Jira project per run, hard cap `BULK_MAX_TICKETS` (25), pause between posts, explicit confirmation, aborts on auth failure, per-ticket reporter/summary placeholders. Every run is stored in the **bulk log** (own history in the dialog; all users under Admin Settings → Audit & logs).
-- **Ticket placeholders** in any response: `@TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS` (filled from the loaded ticket; left visible if no ticket is loaded) plus `@NAME @DESIGNATION @ROLE @R @DATE`.
-- **Confluence** (`services/confluence_*.py`): per-user PAT, resolution notes from a page link. The host is locked to `CONFLUENCE_BASE_URL`; links on other hosts are rejected.
-- **Attachments**: png/jpg/gif/webp/pdf/txt/log only, size-limited (`JIRA_MAX_ATTACHMENT_MB`), file signature checked.
-- **Project access**: `user` and `manager` see only assigned projects (Admin → Content & users → Project access). Enforced on Home, project pages, search, favorites, notifications, AI and in the content service. Admins see all.
+- **Bulk comment** (`services/bulk_comment.py`, `views/bulk_jira.py`): 📣 on the project page, hard cap `BULK_MAX_TICKETS` (25), confirmation, bulk log under Admin → Audit & logs.
+- **Ticket placeholders:** `@TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS` plus `@NAME @DESIGNATION @ROLE @R @DATE`.
+- **Confluence** resolution notes from a page link (`CONFLUENCE_BASE_URL` host lock).
+- **Attachments:** png/jpg/gif/webp/pdf/txt/log only, size-limited, signature checked.
+- **Security:** service-layer RBAC, rate limits, session revoke on password/role change, Docker hardening. See [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
+- **Project access:** `user` / `manager` see only assigned projects; enforced in UI and services.
+- **What's New:** in-app page driven by `docs/releases.json`. Bug fixes: [docs/BUGFIXES.md](docs/BUGFIXES.md). Full history: [CHANGELOG.md](CHANGELOG.md).
+- **Privacy & Terms** and a first-visit session cookie notice (launch checklist).
+- **CSV export** of project library responses (alongside JSON export).
 - New tables are created automatically by `init_db()` (`create_all`); there are no Alembic revisions in this repo yet.
 
 ## Security notes

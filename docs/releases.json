@@ -1,0 +1,48 @@
+[
+  {
+    "version": "2.3.0",
+    "date": "2026-11-02",
+    "title": "Security hardening, dialog UX, transition presets",
+    "features": [
+      "Security (H1–H5) — CI blocks APPLY scripts; service-layer RBAC; rate limits on Jira/bulk/AI/avatar; session revoke on password/role change; Docker binds app to localhost, Ollama internal-only",
+      "Jira dialog Package 2 — single-screen layout (no tabs); people search with Wiki/+Watch; reporter/assignee chips; visibility + action plan + placeholder guard + double-post guard",
+      "Transition chains Package 3 — admin-named multi-step presets; one-click fill on dialog; friendly labels still apply",
+      "My Queue / dashboard — SLA badges, charts, ticket pre-fill into dialog",
+      "Duplicates & suggestions — semantic near-duplicates on save; ranked library suggestions on ticket load"
+    ],
+    "fixes": [
+      "Jira dialog regression restorations on main (template fields, dialog module integrity)",
+      "My Dashboard restored after bad PLACEHOLDER merge; silent except/pass replaced with log_ignored",
+      "CI: no silent except/pass and no raw exception text in UI"
+    ]
+  },
+  {
+    "version": "2.2.0",
+    "date": "2026-10-29",
+    "title": "My Dashboard, avatars, multi-step transitions",
+    "features": [
+      "My Dashboard — open issues assigned to you (all projects), charts by project/status and due date",
+      "Profile photo — upload PNG/JPEG/WebP (max 500 KB), stored with safe re-encoding",
+      "Admin user edit — name, email, designation, role, avatar from Admin → Users",
+      "Categories — edit name, parent (sub-category), sort order inline",
+      "Jira dialog — reporter/assignee/status row, validator field, multi-select transitions in order",
+      "Multi-step transitions — chain statuses in one Post (e.g. To Do → In Progress → Resolved)",
+      "Security — login rate limits, stronger password policy, production FERNET_KEY gate"
+    ],
+    "fixes": [
+      "Login rate-limit and password policy edge cases for production"
+    ]
+  },
+  {
+    "version": "2.1.0",
+    "date": "2026-10-01",
+    "title": "Library + Jira / Confluence core",
+    "features": [
+      "Command library with projects, categories, responses, AI approval",
+      "Jira comment / log time / transition with per-user tokens",
+      "Template [bracket] fields and @mentions → watchers",
+      "Confluence resolution notes, bulk comment, health checks"
+    ],
+    "fixes": []
+  }
+]
