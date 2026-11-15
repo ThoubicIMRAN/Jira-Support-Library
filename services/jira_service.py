@@ -1,6 +1,9 @@
 """High-level Jira operations for the Support Library app."""
 from __future__ import annotations
 
+import threading
+import time
+
 from utils.errors import log_ignored
 import logging
 import re
@@ -258,22 +261,53 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
     }
 
 
-def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False) -> None:
+_RECENT_COMMENTS: dict[tuple, float] = {}
+_RECENT_LOCK = threading.Lock()
+_IDEMPOTENCY_TTL = 600.0      # seconds a successful post blocks an identical retry
+
+
+def _already_posted(key: tuple) -> bool:
+    now = time.monotonic()
+    with _RECENT_LOCK:
+        for k in [k for k, t in _RECENT_COMMENTS.items() if now - t > _IDEMPOTENCY_TTL]:
+            del _RECENT_COMMENTS[k]
+        return key in _RECENT_COMMENTS
+
+
+def _remember_posted(key: tuple) -> None:
+    with _RECENT_LOCK:
+        _RECENT_COMMENTS[key] = time.monotonic()
+
+
+def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False, idempotency_key: str | None = None) -> bool:
+    """Post a comment. Returns True if posted, False if an identical request already succeeded.
+
+    ``idempotency_key`` makes retries safe: once a post with that key succeeded, repeating it
+    does nothing. The key is stored only after Jira accepted the comment, so a failed
+    attempt can be retried.
+    """
     from services.rate_limit import limit_jira_write
     limit_jira_write(user_id)
     body = (body or "").strip()
     if not body:
         raise JiraError("Comment body is empty.")
+    dedupe = (user_id, issue_key, idempotency_key) if idempotency_key else None
+    if dedupe and _already_posted(dedupe):
+        logger.info("Skipped duplicate comment on %s (idempotency key already used)", issue_key)
+        return False
     client = get_client_for_user(user_id)
     try:
         client.add_comment(issue_key, body, internal=internal)
     except TypeError:
         client.add_comment(issue_key, body)
+    if dedupe:
+        _remember_posted(dedupe)
     _audit(user_id, "jira_comment", issue_key, ("[internal] " if internal else "") + body[:200])
     try:
         remember_last_comment(user_id, body)
     except Exception:
         log_ignored(__name__)
+    return True
 
 
 

@@ -317,3 +317,18 @@ button[data-testid^="stBaseButton-primary"] p, button[data-testid^="stBaseButton
 .jsl-table td { padding: .55rem .8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 .jsl-table tr:last-child td { border-bottom: none; }
 .jsl-bad { color: var(--red); font-weight: 700; }
+
+/* Jira action dialog: compact single screen */
+[data-testid="stDialog"] [data-testid="stVerticalBlock"] { gap: .45rem; }
+[data-testid="stDialog"] [data-testid="stWidgetLabel"] p { font-size: .72rem; font-weight: 600; color: var(--text2); }
+[data-testid="stDialog"] [data-testid="stCaptionContainer"] p { font-size: .72rem; }
+[data-testid="stDialog"] [data-testid="stRadio"] label p { font-size: .78rem; }
+[data-testid="stDialog"] [data-testid="stExpander"] summary { padding: .35rem .7rem; }
+[data-testid="stDialog"] [data-testid="stCode"] pre { max-height: 150px; font-size: .74rem !important; }
+[data-testid="stDialog"] .stButton button { min-height: 2rem; white-space: nowrap; }
+.jsl-jd-label { display: block; font: 700 .64rem var(--mono); line-height: 1.3rem; text-transform: uppercase; letter-spacing: .07em; color: var(--text3); padding-top: .25rem; margin: 0; }
+[data-testid="stDialog"] [data-testid="stMarkdownContainer"]:has(> .jsl-jd-label) { margin-bottom: 0; min-height: 1.6rem; }
+.jsl-jd-vis { display: inline-block; font: 600 .7rem var(--sans); padding: 2px 10px; border-radius: 20px; border: 1px solid transparent; }
+.jsl-jd-vis-customer { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); border-color: color-mix(in srgb, var(--red) 28%, transparent); }
+.jsl-jd-vis-internal { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
+[class*="st-key-jira_dlg_"][class*="_footer"] { position: sticky; bottom: -1rem; z-index: 5; background: var(--bg2); border-top: 1px solid var(--border); padding: .55rem 0 .25rem; margin-top: .25rem; }

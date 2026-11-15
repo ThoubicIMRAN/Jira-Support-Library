@@ -4,14 +4,16 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import uuid
 
 import streamlit as st
 
-from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_PRODUCT
+from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_MAX_ATTACHMENT_MB, JIRA_PRODUCT
 from services import jira_service
 from services.confluence_client import ConfluenceError
 from services.jira_client import JiraError
 from services.jira_text import build_comment_preview
+from services.jira_post_flow import run_post_steps
 from services.jira_dialog_safety import action_plan_lines, unresolved_placeholders
 from utils.errors import log_ignored
 
@@ -31,7 +33,7 @@ _MIME_WHITELIST = {
     "application/pdf", "text/plain",
 }
 _MAX_PASTE_BYTES = 8 * 1024 * 1024   # 8 MB
-_MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB
+_MAX_ATTACH_BYTES = JIRA_MAX_ATTACHMENT_MB * 1024 * 1024
 _MAX_QUERY_LEN = 200
 _MAX_EXTRA_USERS = 25
 _DEBUG = False  # flip to True locally; never in prod
@@ -146,7 +148,7 @@ def _collect_watch_ids(response_id: str, issue: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
-@st.dialog("Jira action")
+@st.dialog("Jira action", width="medium")
 def jira_action_dialog(user, project, response_body: str, response_id: str = "x") -> None:
     if not JIRA_ENABLED or not JIRA_BASE_URL:
         st.error("Jira is not configured.")
@@ -160,7 +162,6 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     project_id = getattr(project, "id", None)
     idem_key = _sk(response_id, "idem")
     if idem_key not in st.session_state:
-        import uuid
         st.session_state[idem_key] = uuid.uuid4().hex
 
     # ---------------- header ----------------
@@ -179,7 +180,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     posted_key = _sk(response_id, "posted_ok")
 
     # ---------------- ticket bar ----------------
-    r1, r2, r3, r4 = st.columns([3.2, 0.9, 0.9, 0.9])
+    r1, r2, r3, r4 = st.columns([3.4, 1, 1.1, 1])
     raw = r1.text_input(
         "Ticket",
         value=st.session_state.get(_sk(response_id, "raw"), remembered),
@@ -187,9 +188,9 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         key=_sk(response_id, "ticket_input"),
         label_visibility="collapsed",
     )
-    do_load = r2.button("Load", type="primary", key=_sk(response_id, "load"))
-    do_reload = r3.button("Reload", key=_sk(response_id, "reload"))
-    if r4.button("Reset", key=_sk(response_id, "reset")):
+    do_load = r2.button("Load", type="primary", key=_sk(response_id, "load"), width="stretch")
+    do_reload = r3.button("Reload", key=_sk(response_id, "reload"), width="stretch")
+    if r4.button("Reset", key=_sk(response_id, "reset"), width="stretch"):
         _clear_dialog_state(response_id, project_id)
         st.toast("Cleared")
         return  # nothing else this run; user starts fresh
@@ -272,7 +273,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             logger.warning("suggest_library_for_issue failed", exc_info=True)
             suggestions = []
         if suggestions:
-            st.markdown("##### Suggested replies")
+            st.markdown('<div class="jsl-jd-label">Suggested replies</div>', unsafe_allow_html=True)
             cols = st.columns(min(3, len(suggestions)))
             for i, sug in enumerate(suggestions[:3]):
                 with cols[i]:
@@ -283,7 +284,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                     ):
                         st.session_state[_sk(response_id, "body_override")] = sug.get("body") or ""
                         st.toast("Template applied")
-                    fb1, fb2 = st.columns(2)
+                    fb1, fb2, _fb = st.columns([1, 1, 8])
                     if fb1.button("👍", key=_sk(response_id, f"up_{sug.get('id')}")):
                         try:
                             from services.suggestion_feedback import record_vote
@@ -300,21 +301,21 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
                             log_ignored(__name__)
 
     # ---------------- greeting + visibility ----------------
-    st.markdown("##### Reply & visibility")
-    g1, g2, g3 = st.columns([2, 2, 2])
-    mention_mode = g1.radio(
+    st.markdown('<div class="jsl-jd-label">Reply & visibility</div>', unsafe_allow_html=True)
+    mention_mode = st.radio(
         "Greeting",
         ["plain", "wiki", "none"],
-        format_func=lambda x: {
-            "plain": "Hello Name",
-            "wiki": "Hello [~user]",
-            "none": "Hello Customer",
-        }[x],
+        format_func=lambda x: {"plain": "Hello Name", "wiki": "Hello [~user]", "none": "Hello Customer"}[x],
         horizontal=True,
         key=_sk(response_id, "mention_mode"),
+        label_visibility="collapsed",
     )
     _apply_pending(response_id, "mention_user")
-    mention_user = g2.text_input("Wiki user", key=_sk(response_id, "mention_user"))
+    g2, g3 = st.columns([3, 2])
+    mention_user = g2.text_input(
+        "Wiki user", key=_sk(response_id, "mention_user"),
+        disabled=mention_mode != "wiki", placeholder="username to greet (Hello [~user])",
+    )
     visibility = g3.radio(
         "Visibility",
         ["customer", "internal"],
@@ -323,10 +324,12 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         key=_sk(response_id, "visibility"),
     )
     internal = visibility == "internal"
-    if internal:
-        st.warning("**Internal only** — not shared with the customer.")
-    else:
-        st.error("**Visible to customer** — shared with the customer.")
+    st.markdown(
+        '<span class="jsl-jd-vis jsl-jd-vis-internal">Internal only · not shared with the customer</span>'
+        if internal else
+        '<span class="jsl-jd-vis jsl-jd-vis-customer">Visible to the customer</span>',
+        unsafe_allow_html=True,
+    )
 
     # ---------------- people ----------------
     with st.expander("People (mentions & watchers)", expanded=False):
@@ -452,7 +455,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
         )
 
     # ---------------- actions: time + transitions + attachments ----------------
-    st.markdown("##### Actions")
+    st.markdown('<div class="jsl-jd-label">Actions</div>', unsafe_allow_html=True)
     t1, t2 = st.columns(2)
     time_raw = t1.text_input(
         "Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time")
@@ -490,13 +493,14 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     )
     if st.session_state.pop(_sk(response_id, "pending_clear_clip"), None):
         st.session_state[_sk(response_id, "clipboard_bridge")] = ""
-    st.text_area(
-        "Optional: paste a screenshot data-URL",
-        key=_sk(response_id, "clipboard_bridge"),
-        height=40,
-        label_visibility="collapsed",
-        placeholder="data:image/png;base64,…",
-    )
+    with st.expander("Paste a screenshot (advanced)", expanded=False):
+        st.text_area(
+            "Screenshot data-URL",
+            key=_sk(response_id, "clipboard_bridge"),
+            height=60,
+            label_visibility="collapsed",
+            placeholder="data:image/png;base64,…",
+        )
 
     # ---------------- resolution (only when closing) ----------------
     is_closing = st.checkbox("Closing / resolve", key=_sk(response_id, "closing"))
@@ -615,7 +619,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     bracket_labels = extract_bracket_fields(body_template)
     field_values: dict[str, str] = {}
     if bracket_labels:
-        st.markdown("##### Template fields")
+        st.markdown('<div class="jsl-jd-label">Template fields</div>', unsafe_allow_html=True)
         st.caption("Fill each field used in the library template. Required before posting.")
         cols = st.columns(2) if len(bracket_labels) > 1 else [st]
         for i, label in enumerate(bracket_labels):
@@ -676,12 +680,12 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     except Exception:
         log_ignored(__name__)
 
-    st.markdown("##### Preview")
+    st.markdown('<div class="jsl-jd-label">Preview</div>', unsafe_allow_html=True)
     st.code(preview or "", language=None, wrap_lines=True)
     st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · fill [custom fields] above")
 
     # ---------------- safety: plan + placeholders ----------------
-    st.markdown("##### Before you post")
+    st.markdown('<div class="jsl-jd-label">Before you post</div>', unsafe_allow_html=True)
     files_n = len(uploads) if uploads else 0
     _tlabels = [lab for _, lab in transition_chain]
     plan = action_plan_lines(
@@ -708,126 +712,87 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
             + ". Fill template fields or remove them before posting."
         )
 
-    # ---------------- post ----------------
-    if st.session_state.get(posted_key):
-        st.success("Already posted in this dialog.")
-        if st.button("Post another update", key=_sk(response_id, "post_again")):
-            st.session_state.pop(posted_key, None)
-            st.session_state[idem_key] = __import__("uuid").uuid4().hex
-            st.rerun()
-        return
+    # ---------------- post (sticky footer) ----------------
+    steps_key = _sk(response_id, "steps_done")
+    done: set = st.session_state.setdefault(steps_key, set())
+    with st.container(key=_sk(response_id, "footer")):
+        if st.session_state.get(posted_key):
+            msg = st.session_state[posted_key]
+            st.success(msg if isinstance(msg, str) else "Already posted in this dialog.")
+            if st.button("Post another update", key=_sk(response_id, "post_again"), width="stretch"):
+                # no st.rerun(): inside a dialog it would close the dialog
+                st.session_state.pop(posted_key, None)
+                st.session_state[steps_key] = done = set()
+                st.session_state[idem_key] = uuid.uuid4().hex
+            else:
+                return
 
-    can_post = not leftover
-    if st.button(
-        "Post to Jira",
-        type="primary",
-        key=_sk(response_id, "post"),
-        disabled=not can_post,
-        help="Disabled while placeholders remain" if not can_post else "Submit actions to Jira",
-    ):
-        results: list[str] = []
-        errors: list[str] = []
-        key = issue["key"]
-
-        # Comment first
-        try:
-            jira_service.add_comment(
-                user.id,
-                key,
-                preview or "",
-                internal=internal,
-                idempotency_key=st.session_state.get(idem_key),
-            )
-            results.append("✔ Comment")
-        except Exception as exc:
-            errors.append(f"✖ Comment: {_msg(exc)}")
-
-        # Watchers
-        try:
-            watch_ids = _collect_watch_ids(response_id, issue)
-            if watch_ids and hasattr(jira_service, "add_watchers"):
-                werr = jira_service.add_watchers(user.id, key, watch_ids)
-                if werr:
-                    errors.append("✖ Watchers: " + "; ".join(_safe_text(w) for w in werr[:3]))
-                else:
-                    results.append(f"✔ Watchers ({len(watch_ids)})")
-        except Exception as exc:
-            errors.append(f"✖ Watchers: {_msg(exc)}")
-
-        # Attachments — per-file isolation
-        if uploads:
-            for f in uploads:
-                try:
-                    name = _safe_filename(f.name)
-                    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                    if ext not in _EXT_WHITELIST:
-                        errors.append(f"✖ File {name}: unsupported extension")
-                        continue
-                    mime = getattr(f, "type", None) or ""
-                    if mime and mime not in _MIME_WHITELIST:
-                        errors.append(f"✖ File {name}: unsupported MIME {mime}")
-                        continue
-                    data = f.getvalue()
-                    if len(data) > _MAX_ATTACH_BYTES:
-                        errors.append(f"✖ File {name}: exceeds 25 MB")
-                        continue
-                    jira_service.add_attachment(user.id, key, name, data, mime or None)
-                    results.append(f"✔ File {name}")
-                except Exception as exc:
-                    errors.append(f"✖ File: {_msg(exc)}")
-
-        # Pasted screenshot
-        paste_val = st.session_state.get(_sk(response_id, "clipboard_bridge")) or ""
-        if isinstance(paste_val, str) and paste_val.startswith("data:image"):
-            try:
-                if not _DATA_URL_RE.match(paste_val):
-                    raise ValueError("Only PNG/JPEG/GIF/WEBP data-URLs accepted")
-                header, b64data = paste_val.split(",", 1)
-                ext = "jpg" if ("jpeg" in header or "jpg" in header) else header.split("/")[1].split(";")[0]
-                raw_b = base64.b64decode(b64data, validate=True)
-                if len(raw_b) > _MAX_PASTE_BYTES:
-                    raise ValueError("Pasted image exceeds 8 MB")
-                fname = _safe_filename(f"paste_{key}.{ext}")
-                jira_service.add_attachment(user.id, key, fname, raw_b, f"image/{ext}")
-                results.append(f"✔ Screenshot {fname}")
+        can_post = not leftover
+        label = "Retry failed steps" if done else "Post to Jira"
+        if st.button(
+            label,
+            type="primary",
+            key=_sk(response_id, "post"),
+            disabled=not can_post,
+            width="stretch",
+            help="Disabled while placeholders remain" if not can_post else "Run the selected actions",
+        ):
+            key = issue["key"]
+            files, problems = _prepare_files(uploads, st.session_state.get(_sk(response_id, "clipboard_bridge")) or "", key)
+            with st.spinner("Posting…"):
+                out = run_post_steps(
+                    user.id,
+                    key,
+                    comment=preview or "",
+                    internal=internal,
+                    idempotency_key=st.session_state[idem_key],
+                    done=done,
+                    watchers=_collect_watch_ids(response_id, issue),
+                    files=files,
+                    time_raw=time_raw,
+                    chain=transition_chain,
+                )
+            st.session_state[steps_key] = done
+            if any(n.startswith("file:paste_") for n in done):
                 st.session_state[_sk(response_id, "pending_clear_clip")] = True
-            except Exception as exc:
-                errors.append(f"✖ Paste: {_msg(exc)}")
+            errors = problems + out.errors
+            if out.results:
+                st.success(f"**Posted to {_safe_text(key)}**\n\n" + "\n".join(f"- {_safe_text(r)}" for r in out.results))
+            for e in errors:
+                st.error(_safe_text("✖ " + e))
+            if errors and done:
+                st.caption("Steps that finished are kept. Click the button again to retry only what failed.")
+            if out.results and not errors:
+                st.session_state[posted_key] = f"Posted to {_safe_text(key)} ({len(out.results)} action(s))."
 
-        # Worklog
-        if (time_raw or "").strip():
-            try:
-                spent = jira_service.log_work(user.id, key, time_raw)
-                results.append(f"✔ Time {_safe_text(spent)}")
-            except Exception as exc:
-                errors.append(f"✖ Worklog: {_msg(exc)}")
 
-        # Transitions
-        if transition_chain:
-            try:
-                if len(transition_chain) == 1:
-                    jira_service.transition_issue(
-                        user.id, key, transition_chain[0][0], label=transition_chain[0][1]
-                    )
-                    results.append(f"✔ → {_safe_text(transition_chain[0][1])}")
-                else:
-                    applied = jira_service.multi_step_transition(
-                        user.id,
-                        key,
-                        [x[0] for x in transition_chain],
-                        labels=[x[1] for x in transition_chain],
-                    )
-                    results.append("✔ → " + " → ".join(_safe_text(a) for a in applied))
-            except Exception as exc:
-                errors.append(f"✖ Transition: {_msg(exc)}")
-
-        if results and not errors:
-            st.session_state[posted_key] = True
-        if results:
-            st.success(
-                f"**Posted to {_safe_text(key)}**\n\n"
-                + "\n".join(f"• {r}" for r in results)
-            )
-        for e in errors:
-            st.error(e)
-            logger.error("jira post step failed: %s", e)
+def _prepare_files(uploads, paste_val: str, key: str) -> tuple[list[tuple[str, bytes, str | None]], list[str]]:
+    """Validate uploaded files and an optional pasted screenshot. Returns (files, problems)."""
+    files: list[tuple[str, bytes, str | None]] = []
+    problems: list[str] = []
+    for f in uploads or []:
+        name = _safe_filename(f.name)
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        mime = getattr(f, "type", None) or ""
+        data = f.getvalue()
+        if ext not in _EXT_WHITELIST:
+            problems.append(f"File {name}: unsupported extension")
+        elif mime and mime not in _MIME_WHITELIST:
+            problems.append(f"File {name}: unsupported type {mime}")
+        elif len(data) > _MAX_ATTACH_BYTES:
+            problems.append(f"File {name}: larger than {JIRA_MAX_ATTACHMENT_MB} MB")
+        else:
+            files.append((name, data, mime or None))
+    if isinstance(paste_val, str) and paste_val.startswith("data:image"):
+        try:
+            if not _DATA_URL_RE.match(paste_val):
+                raise ValueError("Only PNG/JPEG/GIF/WEBP data-URLs are accepted")
+            header, b64data = paste_val.split(",", 1)
+            ext = "jpg" if ("jpeg" in header or "jpg" in header) else header.split("/")[1].split(";")[0]
+            raw = base64.b64decode(b64data, validate=True)
+            if len(raw) > _MAX_PASTE_BYTES:
+                raise ValueError("Pasted image is larger than 8 MB")
+            files.append((_safe_filename(f"paste_{key}.{ext}"), raw, f"image/{ext}"))
+        except ValueError as exc:
+            problems.append(f"Paste: {exc}")
+    return files, problems

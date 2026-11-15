@@ -1,0 +1,974 @@
+From eb8d7b75fe007bd5ff9c995b361d2f08baac9bb8 Mon Sep 17 00:00:00 2001
+From: fix <fix@example.com>
+Date: Sun, 15 Nov 2026 04:38:22 +0000
+Subject: [PATCH] fix(jira-dialog): repair failing actions, compact modal,
+ retry-safe posting
+
+- add_comment accepts idempotency_key (recorded only after success); previously every Post failed at the comment step while time/status still ran
+- draft_resolution_notes accepts use_ai (the Draft button always raised TypeError)
+- post steps run via services/jira_post_flow: finished steps are never repeated on retry; status steps run one at a time
+- dialog: width medium, horizontal greeting/visibility, visibility chip, sticky footer, no st.rerun inside the dialog, screenshot paste tucked away, file limits follow JIRA_MAX_ATTACHMENT_MB
+- remove dead Snipe-IT settings section (missing module)
+- tests: call-signature contract test, post-flow/idempotency/retry tests
+---
+ assets/styles.css                    |  15 ++
+ services/jira_post_flow.py           |  97 ++++++++++
+ services/jira_service.py             |  36 +++-
+ services/resolution_notes_service.py |   3 +-
+ tests/test_call_contracts.py         |  81 ++++++++
+ tests/test_jira_post_flow.py         | 208 ++++++++++++++++++++
+ views/jira_action_dialog.py          | 275 ++++++++++++---------------
+ views/settings.py                    |  14 +-
+ 8 files changed, 559 insertions(+), 170 deletions(-)
+ create mode 100644 services/jira_post_flow.py
+ create mode 100644 tests/test_call_contracts.py
+ create mode 100644 tests/test_jira_post_flow.py
+
+diff --git a/assets/styles.css b/assets/styles.css
+index ea18a57..dd7f53f 100644
+--- a/assets/styles.css
++++ b/assets/styles.css
+@@ -317,3 +317,18 @@ button[data-testid^="stBaseButton-primary"] p, button[data-testid^="stBaseButton
+ .jsl-table td { padding: .55rem .8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+ .jsl-table tr:last-child td { border-bottom: none; }
+ .jsl-bad { color: var(--red); font-weight: 700; }
++
++/* Jira action dialog: compact single screen */
++[data-testid="stDialog"] [data-testid="stVerticalBlock"] { gap: .45rem; }
++[data-testid="stDialog"] [data-testid="stWidgetLabel"] p { font-size: .72rem; font-weight: 600; color: var(--text2); }
++[data-testid="stDialog"] [data-testid="stCaptionContainer"] p { font-size: .72rem; }
++[data-testid="stDialog"] [data-testid="stRadio"] label p { font-size: .78rem; }
++[data-testid="stDialog"] [data-testid="stExpander"] summary { padding: .35rem .7rem; }
++[data-testid="stDialog"] [data-testid="stCode"] pre { max-height: 150px; font-size: .74rem !important; }
++[data-testid="stDialog"] .stButton button { min-height: 2rem; white-space: nowrap; }
++.jsl-jd-label { display: block; font: 700 .64rem var(--mono); line-height: 1.3rem; text-transform: uppercase; letter-spacing: .07em; color: var(--text3); padding-top: .25rem; margin: 0; }
++[data-testid="stDialog"] [data-testid="stMarkdownContainer"]:has(> .jsl-jd-label) { margin-bottom: 0; min-height: 1.6rem; }
++.jsl-jd-vis { display: inline-block; font: 600 .7rem var(--sans); padding: 2px 10px; border-radius: 20px; border: 1px solid transparent; }
++.jsl-jd-vis-customer { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); border-color: color-mix(in srgb, var(--red) 28%, transparent); }
++.jsl-jd-vis-internal { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
++[class*="st-key-jira_dlg_"][class*="_footer"] { position: sticky; bottom: -1rem; z-index: 5; background: var(--bg2); border-top: 1px solid var(--border); padding: .55rem 0 .25rem; margin-top: .25rem; }
+diff --git a/services/jira_post_flow.py b/services/jira_post_flow.py
+new file mode 100644
+index 0000000..110d9e1
+--- /dev/null
++++ b/services/jira_post_flow.py
+@@ -0,0 +1,97 @@
++"""Run the actions of the Jira dialog as independent, retry-safe steps.
++
++Steps: comment, watchers, each attachment, time log, transition(s). Every step records itself
++in ``done`` when it succeeds, so pressing Post again after a partial failure retries only the
++steps that failed (no second comment, no double time log, no second status change).
++"""
++from __future__ import annotations
++
++import logging
++from dataclasses import dataclass, field
++from typing import Callable, Iterable
++
++from services import jira_service
++from services.jira_client import JiraError
++from utils.errors import safe_message
++
++logger = logging.getLogger(__name__)
++
++
++@dataclass
++class StepOutcome:
++    results: list[str] = field(default_factory=list)
++    errors: list[str] = field(default_factory=list)
++
++    @property
++    def ok(self) -> bool:
++        return bool(self.results) and not self.errors
++
++
++def _message(exc: Exception) -> str:
++    return str(exc)[:300] if isinstance(exc, (JiraError, ValueError)) else safe_message(exc)
++
++
++def _step(done: set, name: str, label: str, fn: Callable[[], str | None], out: StepOutcome) -> None:
++    if name in done:
++        out.results.append(f"✔ {label} (already done)")
++        return
++    try:
++        detail = fn()
++    except Exception as exc:  # noqa: BLE001 - reported per step, never aborts the other steps
++        logger.warning("Jira step %s failed: %s", name, type(exc).__name__, exc_info=True)
++        out.errors.append(f"{label}: {_message(exc)}")
++        return
++    done.add(name)
++    out.results.append(f"✔ {label}{(' ' + detail) if detail else ''}")
++
++
++def run_post_steps(
++    user_id: int,
++    issue_key: str,
++    *,
++    comment: str,
++    internal: bool,
++    idempotency_key: str,
++    done: set,
++    watchers: Iterable[str] = (),
++    files: Iterable[tuple[str, bytes, str | None]] = (),
++    time_raw: str = "",
++    chain: list[tuple[str, str]] | None = None,
++) -> StepOutcome:
++    """Execute the selected actions in a fixed order; ``done`` is updated in place."""
++    out = StepOutcome()
++
++    def post_comment() -> str | None:
++        posted = jira_service.add_comment(user_id, issue_key, comment, internal=internal, idempotency_key=idempotency_key)
++        return None if posted else "(already posted)"
++
++    _step(done, "comment", "Comment", post_comment, out)
++
++    ids = [w for w in dict.fromkeys(w.strip().lstrip("@") for w in watchers) if w]
++    if ids:
++        def add_watchers() -> str | None:
++            problems = jira_service.add_watchers(user_id, issue_key, ids)
++            if problems:
++                raise JiraError("; ".join(str(p) for p in problems[:3]))
++            return f"({len(ids)})"
++
++        _step(done, "watchers", "Watchers", add_watchers, out)
++
++    for name, data, mime in files:
++        _step(done, f"file:{name}", f"File {name}", lambda n=name, d=data, m=mime: jira_service.add_attachment(user_id, issue_key, n, d, m) and None, out)
++
++    if (time_raw or "").strip():
++        _step(done, "time", "Time", lambda: str(jira_service.log_work(user_id, issue_key, time_raw)), out)
++
++    for i, (tid, label) in enumerate(chain or []):
++        before = len(out.errors)
++        # one step at a time: availability is re-checked against the ticket's *current* status,
++        # and a retry resumes after the last step that really happened
++        _step(
++            done, f"transition:{i}:{tid}", f"Status → {label}",
++            lambda t=tid, lab=label: jira_service.multi_step_transition(user_id, issue_key, [t], labels=[lab]) and None,
++            out,
++        )
++        if len(out.errors) > before:
++            break                       # later steps depend on this one
++    return out
+diff --git a/services/jira_service.py b/services/jira_service.py
+index b8d84a8..74f1974 100644
+--- a/services/jira_service.py
++++ b/services/jira_service.py
+@@ -1,6 +1,9 @@
+ """High-level Jira operations for the Support Library app."""
+ from __future__ import annotations
+ 
++import threading
++import time
++
+ from utils.errors import log_ignored
+ import logging
+ import re
+@@ -258,22 +261,53 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
+     }
+ 
+ 
+-def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False) -> None:
++_RECENT_COMMENTS: dict[tuple, float] = {}
++_RECENT_LOCK = threading.Lock()
++_IDEMPOTENCY_TTL = 600.0      # seconds a successful post blocks an identical retry
++
++
++def _already_posted(key: tuple) -> bool:
++    now = time.monotonic()
++    with _RECENT_LOCK:
++        for k in [k for k, t in _RECENT_COMMENTS.items() if now - t > _IDEMPOTENCY_TTL]:
++            del _RECENT_COMMENTS[k]
++        return key in _RECENT_COMMENTS
++
++
++def _remember_posted(key: tuple) -> None:
++    with _RECENT_LOCK:
++        _RECENT_COMMENTS[key] = time.monotonic()
++
++
++def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False, idempotency_key: str | None = None) -> bool:
++    """Post a comment. Returns True if posted, False if an identical request already succeeded.
++
++    ``idempotency_key`` makes retries safe: once a post with that key succeeded, repeating it
++    does nothing. The key is stored only after Jira accepted the comment, so a failed
++    attempt can be retried.
++    """
+     from services.rate_limit import limit_jira_write
+     limit_jira_write(user_id)
+     body = (body or "").strip()
+     if not body:
+         raise JiraError("Comment body is empty.")
++    dedupe = (user_id, issue_key, idempotency_key) if idempotency_key else None
++    if dedupe and _already_posted(dedupe):
++        logger.info("Skipped duplicate comment on %s (idempotency key already used)", issue_key)
++        return False
+     client = get_client_for_user(user_id)
+     try:
+         client.add_comment(issue_key, body, internal=internal)
+     except TypeError:
+         client.add_comment(issue_key, body)
++    if dedupe:
++        _remember_posted(dedupe)
+     _audit(user_id, "jira_comment", issue_key, ("[internal] " if internal else "") + body[:200])
+     try:
+         remember_last_comment(user_id, body)
+     except Exception:
+         log_ignored(__name__)
++    return True
+ 
+ 
+ 
+diff --git a/services/resolution_notes_service.py b/services/resolution_notes_service.py
+index 27d7b48..9574495 100644
+--- a/services/resolution_notes_service.py
++++ b/services/resolution_notes_service.py
+@@ -33,6 +33,7 @@ def draft_resolution_notes(
+     extra_context: str = "",
+     manual_title: str = "",
+     manual_excerpt: str = "",
++    use_ai: bool = True,
+ ) -> str:
+     if (manual_excerpt or "").strip():
+         page = {
+@@ -47,7 +48,7 @@ def draft_resolution_notes(
+     try:
+         from services.ai_service import chat, ollama_available
+ 
+-        if ollama_available():
++        if use_ai and ollama_available():
+             system = (
+                 "You write short Jira resolution notes for support engineers.\n"
+                 "Output ONLY the notes text (no title line).\n"
+diff --git a/tests/test_call_contracts.py b/tests/test_call_contracts.py
+new file mode 100644
+index 0000000..8a38b79
+--- /dev/null
++++ b/tests/test_call_contracts.py
+@@ -0,0 +1,81 @@
++"""Every cross-module call must match the real function signature.
++
++A caller passing an argument the callee does not accept (for example the Jira dialog calling
++add_comment(idempotency_key=...) before add_comment supported it) fails only when a user clicks
++the button, and the error is easy to hide behind a broad ``except``. This test finds it in CI.
++"""
++import ast
++import importlib
++import inspect
++import subprocess
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++PREFIXES = ("views/", "services/", "utils/", "components/")
++
++
++def _tracked_files():
++    out = subprocess.run(["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True).stdout.split()
++    return [f for f in out if f.startswith(PREFIXES) or f in ("app.py", "auth.py", "email_service.py", "oauth_service.py")]
++
++
++def _signature_problems(fn, call):
++    try:
++        params = inspect.signature(fn).parameters
++    except (TypeError, ValueError):
++        return []
++    accepts_kwargs = any(p.kind is p.VAR_KEYWORD for p in params.values())
++    bad = [k.arg for k in call.keywords if k.arg and k.arg not in params and not accepts_kwargs]
++    star = any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords)
++    if not star:
++        given = {k.arg for k in call.keywords}
++        positional = [p for p in params.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
++        for i, p in enumerate(positional):
++            if p.default is p.empty and i >= len(call.args) and p.name not in given:
++                bad.append(f"missing:{p.name}")
++        for p in params.values():
++            if p.kind is p.KEYWORD_ONLY and p.default is p.empty and p.name not in given:
++                bad.append(f"missing:{p.name}")
++        if len(call.args) > len(positional) and not any(p.kind is p.VAR_POSITIONAL for p in params.values()):
++            bad.append("too_many_positional")
++    return bad
++
++
++def test_call_sites_match_function_signatures():
++    problems = []
++    for rel in _tracked_files():
++        tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
++        modules, functions = {}, {}
++        for node in ast.walk(tree):
++            if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] in ("services", "utils", "components", "views"):
++                for alias in node.names:
++                    name = alias.asname or alias.name
++                    try:
++                        target = importlib.import_module(node.module)
++                        obj = getattr(target, alias.name, None)
++                        if obj is None:
++                            modules[name] = importlib.import_module(f"{node.module}.{alias.name}")
++                        elif inspect.ismodule(obj):
++                            modules[name] = obj
++                        elif callable(obj) and not inspect.isclass(obj):
++                            functions[name] = obj
++                    except Exception as exc:  # noqa: BLE001
++                        problems.append(f"{rel}:{node.lineno} cannot import {node.module}.{alias.name} ({type(exc).__name__})")
++        for node in ast.walk(tree):
++            if not isinstance(node, ast.Call):
++                continue
++            fn = label = None
++            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in modules:
++                label = f"{node.func.value.id}.{node.func.attr}"
++                fn = getattr(modules[node.func.value.id], node.func.attr, None)
++                if fn is None:
++                    problems.append(f"{rel}:{node.lineno} {label} does not exist")
++                    continue
++            elif isinstance(node.func, ast.Name) and node.func.id in functions:
++                fn, label = functions[node.func.id], node.func.id
++            if fn is None or inspect.isclass(fn):
++                continue
++            bad = _signature_problems(fn, node)
++            if bad:
++                problems.append(f"{rel}:{node.lineno} {label}({', '.join(bad)})")
++    assert not problems, "\n".join(problems)
+diff --git a/tests/test_jira_post_flow.py b/tests/test_jira_post_flow.py
+new file mode 100644
+index 0000000..736b41f
+--- /dev/null
++++ b/tests/test_jira_post_flow.py
+@@ -0,0 +1,208 @@
++"""Jira dialog actions: idempotent comments, retry-safe steps, safe errors, file checks."""
++import types
++
++import pytest
++from sqlalchemy import select
++
++from conftest import PASSWORD
++from database import AuditLog, SessionLocal, User
++from services import jira_post_flow as flow
++from services import jira_service as js
++from services.jira_client import JiraError
++
++
++class FakeClient:
++    """Records calls; ``fail`` maps a method name to an exception to raise (once if listed in ``once``)."""
++
++    def __init__(self, fail=None, once=()):
++        self.calls, self.fail, self.once = [], fail or {}, set(once)
++
++    def _go(self, name, *args, **kw):
++        self.calls.append((name, args, kw))
++        exc = self.fail.get(name)
++        if exc is not None:
++            if name in self.once:
++                self.fail.pop(name)
++            raise exc
++        return {}
++
++    def add_comment(self, key, body, *a, **k): return self._go("add_comment", key, body, **k)
++    def add_watcher(self, key, ident): return self._go("add_watcher", key, ident)
++    def add_attachment(self, key, name, data, mime=None): return self._go("add_attachment", key, name)
++    def add_worklog(self, key, **k): return self._go("add_worklog", key, **k)
++    def do_transition(self, key, tid): return self._go("do_transition", key, tid)
++    def list_transitions(self, key): return [{"id": "11", "name": "To Do"}, {"id": "21", "name": "Doing"}, {"id": "31", "name": "Done"}]
++
++    def names(self): return [c[0] for c in self.calls]
++
++
++@pytest.fixture
++def uid():
++    from auth import hash_password
++
++    with SessionLocal() as db:
++        row = db.scalar(select(User).where(User.username == "flow_user"))
++        if not row:
++            row = User(username="flow_user", full_name="Flow", role="user", password_hash=hash_password(PASSWORD), must_change_password=False)
++            db.add(row)
++            db.commit()
++            db.refresh(row)
++        return row.id
++
++
++def _use(monkeypatch, client):
++    monkeypatch.setattr(js, "get_client_for_user", lambda user_id: client)
++    js._RECENT_COMMENTS.clear()
++
++
++def _run(uid, done, **kw):
++    base = dict(comment="Hello", internal=False, idempotency_key="k1", done=done)
++    base.update(kw)
++    return flow.run_post_steps(uid, "PROJ-1", **base)
++
++
++# --------------------------------------------------------------------- add_comment idempotency
++def test_add_comment_accepts_an_idempotency_key_and_posts_once(uid, monkeypatch):
++    client = FakeClient()
++    _use(monkeypatch, client)
++    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="abc") is True
++    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="abc") is False       # duplicate click
++    assert client.names().count("add_comment") == 1
++    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="other") is True       # new key posts
++
++
++def test_a_failed_comment_can_be_retried_with_the_same_key(uid, monkeypatch):
++    client = FakeClient(fail={"add_comment": JiraError("boom")}, once={"add_comment"})
++    _use(monkeypatch, client)
++    with pytest.raises(JiraError):
++        js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="retry")
++    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="retry") is True       # key was not burned
++    assert client.names().count("add_comment") == 2
++
++
++def test_comment_without_key_is_never_deduplicated(uid, monkeypatch):
++    client = FakeClient()
++    _use(monkeypatch, client)
++    js.add_comment(uid, "PROJ-1", "same")
++    js.add_comment(uid, "PROJ-1", "same")
++    assert client.names().count("add_comment") == 2
++
++
++# --------------------------------------------------------------------- step runner
++def test_all_steps_run_in_a_fixed_order(uid, monkeypatch):
++    client = FakeClient()
++    _use(monkeypatch, client)
++    out = _run(uid, set(), watchers=["a.rao", "@b.lee"], files=[("a.png", b"\x89PNG\r\n\x1a\n" + b"0" * 20, "image/png")], time_raw="15m",
++               chain=[("11", "To Do"), ("21", "Doing")])
++    assert out.ok and not out.errors
++    assert client.names() == ["add_comment", "add_watcher", "add_watcher", "add_attachment", "add_worklog",
++                              "do_transition", "do_transition"]
++
++
++def test_partial_failure_retry_does_not_repeat_finished_steps(uid, monkeypatch):
++    client = FakeClient(fail={"add_worklog": JiraError("Time tracking is disabled")}, once={"add_worklog"})
++    _use(monkeypatch, client)
++    done = set()
++    first = _run(uid, done, time_raw="15m", chain=[("11", "To Do")])
++    assert any("Time" in e for e in first.errors) and "comment" in done and "time" not in done
++    second = _run(uid, done, time_raw="15m", chain=[("11", "To Do")])
++    assert not second.errors
++    assert client.names().count("add_comment") == 1            # no second comment
++    assert client.names().count("add_worklog") == 2            # only the failed step retried
++    assert client.names().count("do_transition") == 1          # transition ran once, not twice
++
++
++def test_status_chain_stops_at_the_first_failure_and_resumes_there(uid, monkeypatch):
++    client = FakeClient(fail={"do_transition": JiraError("not allowed")}, once={"do_transition"})
++    _use(monkeypatch, client)
++    done = set()
++    chain = [("11", "To Do"), ("21", "Doing"), ("31", "Done")]
++    first = _run(uid, done, chain=chain)
++    assert len(first.errors) == 1 and client.names().count("do_transition") == 1   # stopped at step 1
++    second = _run(uid, done, chain=chain)
++    assert not second.errors
++    assert client.names().count("do_transition") == 4          # 1 failed + 3 successful, none repeated
++    assert {"transition:0:11", "transition:1:21", "transition:2:31"} <= done
++
++
++def test_unexpected_errors_never_leak_internal_details(uid, monkeypatch):
++    client = FakeClient(fail={"add_comment": RuntimeError("secret https://jira.corp.example token=abc")})
++    _use(monkeypatch, client)
++    out = _run(uid, set())
++    joined = " ".join(out.errors)
++    assert out.errors and "secret" not in joined and "token=abc" not in joined
++
++
++def test_jira_validation_messages_are_shown_to_the_user(uid, monkeypatch):
++    client = FakeClient(fail={"add_comment": JiraError("Jira API 403: no permission to comment")})
++    _use(monkeypatch, client)
++    out = _run(uid, set())
++    assert any("403" in e for e in out.errors)
++
++
++# --------------------------------------------------------------------- resolution notes
++def test_draft_resolution_notes_honours_use_ai(monkeypatch):
++    from services import ai_service, resolution_notes_service as rn
++
++    monkeypatch.setattr(rn, "fetch_page_for_user", lambda uid, url: {"title": "VPN fix", "excerpt": "Reset the profile.", "link": "https://wiki.example/x"})
++
++    def boom():
++        raise AssertionError("AI must not be contacted when use_ai=False")
++
++    monkeypatch.setattr(ai_service, "ollama_available", boom)
++    text = rn.draft_resolution_notes(user_id=1, confluence_url="https://wiki.example/x", ticket_key="PROJ-1", ticket_summary="VPN", use_ai=False)
++    assert "https://wiki.example/x" in text
++
++
++# --------------------------------------------------------------------- dialog helpers
++def _upload(name, data, mime):
++    return types.SimpleNamespace(name=name, type=mime, getvalue=lambda: data)
++
++
++def test_prepare_files_accepts_good_files_and_reports_bad_ones():
++    from views.jira_action_dialog import _prepare_files
++
++    files, problems = _prepare_files([_upload("ok.png", b"x" * 10, "image/png"), _upload("bad.exe", b"MZ", "application/x-msdownload"),
++                                      _upload("big.pdf", b"x" * (11 * 1024 * 1024), "application/pdf")], "", "PROJ-1")
++    assert [f[0] for f in files] == ["ok.png"]
++    assert len(problems) == 2 and any("exe" in p for p in problems) and any("larger" in p for p in problems)
++
++
++def test_prepare_files_rejects_non_image_paste():
++    from views.jira_action_dialog import _prepare_files
++
++    assert _prepare_files([], "data:image/svg+xml;base64,AAAA", "PROJ-1")[1]
++    assert _prepare_files([], "data:image/png;base64,@@not-base64@@", "PROJ-1")[1]
++
++
++def test_dialog_has_no_bulk_posting_and_never_calls_rerun():
++    import ast
++    from pathlib import Path
++
++    src = (Path(__file__).resolve().parents[1] / "views" / "jira_action_dialog.py").read_text(encoding="utf-8")
++    assert "bulk" not in src.lower(), "bulk posting belongs on the project page, not in the single-ticket dialog"
++    reruns = [n.lineno for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rerun"]
++    assert not reruns, f"st.rerun() inside a dialog closes it (lines {reruns})"
++    assert 'width="medium"' in src
++
++
++def test_failed_steps_are_not_marked_with_a_tick(uid, monkeypatch):
++    _use(monkeypatch, FakeClient(fail={"add_worklog": JiraError("no time tracking")}))
++    out = _run(uid, set(), time_raw="15m")
++    assert any(r.startswith("✔ Comment") for r in out.results)
++    assert out.errors and all(not e.startswith("✔") for e in out.errors)
++
++
++def test_settings_page_no_longer_references_a_missing_module():
++    from pathlib import Path
++
++    assert "snipeit" not in (Path(__file__).resolve().parents[1] / "views" / "settings.py").read_text(encoding="utf-8").lower()
++
++
++def test_audit_trail_records_the_posted_comment(uid, monkeypatch):
++    client = FakeClient()
++    _use(monkeypatch, client)
++    js.add_comment(uid, "AUD-1", "audited body", idempotency_key="aud")
++    with SessionLocal() as db:
++        row = db.scalar(select(AuditLog).where(AuditLog.entity_id == "AUD-1", AuditLog.action == "jira_comment"))
++    assert row is not None
+diff --git a/views/jira_action_dialog.py b/views/jira_action_dialog.py
+index 2043dc3..87cffd2 100644
+--- a/views/jira_action_dialog.py
++++ b/views/jira_action_dialog.py
+@@ -4,14 +4,16 @@ from __future__ import annotations
+ import base64
+ import logging
+ import re
++import uuid
+ 
+ import streamlit as st
+ 
+-from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_PRODUCT
++from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_MAX_ATTACHMENT_MB, JIRA_PRODUCT
+ from services import jira_service
+ from services.confluence_client import ConfluenceError
+ from services.jira_client import JiraError
+ from services.jira_text import build_comment_preview
++from services.jira_post_flow import run_post_steps
+ from services.jira_dialog_safety import action_plan_lines, unresolved_placeholders
+ from utils.errors import log_ignored
+ 
+@@ -31,7 +33,7 @@ _MIME_WHITELIST = {
+     "application/pdf", "text/plain",
+ }
+ _MAX_PASTE_BYTES = 8 * 1024 * 1024   # 8 MB
+-_MAX_ATTACH_BYTES = 25 * 1024 * 1024  # 25 MB
++_MAX_ATTACH_BYTES = JIRA_MAX_ATTACHMENT_MB * 1024 * 1024
+ _MAX_QUERY_LEN = 200
+ _MAX_EXTRA_USERS = 25
+ _DEBUG = False  # flip to True locally; never in prod
+@@ -146,7 +148,7 @@ def _collect_watch_ids(response_id: str, issue: dict) -> list[str]:
+ # ---------------------------------------------------------------------------
+ # Dialog
+ # ---------------------------------------------------------------------------
+-@st.dialog("Jira action")
++@st.dialog("Jira action", width="medium")
+ def jira_action_dialog(user, project, response_body: str, response_id: str = "x") -> None:
+     if not JIRA_ENABLED or not JIRA_BASE_URL:
+         st.error("Jira is not configured.")
+@@ -160,7 +162,6 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+     project_id = getattr(project, "id", None)
+     idem_key = _sk(response_id, "idem")
+     if idem_key not in st.session_state:
+-        import uuid
+         st.session_state[idem_key] = uuid.uuid4().hex
+ 
+     # ---------------- header ----------------
+@@ -179,7 +180,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+     posted_key = _sk(response_id, "posted_ok")
+ 
+     # ---------------- ticket bar ----------------
+-    r1, r2, r3, r4 = st.columns([3.2, 0.9, 0.9, 0.9])
++    r1, r2, r3, r4 = st.columns([3.4, 1, 1.1, 1])
+     raw = r1.text_input(
+         "Ticket",
+         value=st.session_state.get(_sk(response_id, "raw"), remembered),
+@@ -187,9 +188,9 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+         key=_sk(response_id, "ticket_input"),
+         label_visibility="collapsed",
+     )
+-    do_load = r2.button("Load", type="primary", key=_sk(response_id, "load"))
+-    do_reload = r3.button("Reload", key=_sk(response_id, "reload"))
+-    if r4.button("Reset", key=_sk(response_id, "reset")):
++    do_load = r2.button("Load", type="primary", key=_sk(response_id, "load"), width="stretch")
++    do_reload = r3.button("Reload", key=_sk(response_id, "reload"), width="stretch")
++    if r4.button("Reset", key=_sk(response_id, "reset"), width="stretch"):
+         _clear_dialog_state(response_id, project_id)
+         st.toast("Cleared")
+         return  # nothing else this run; user starts fresh
+@@ -272,7 +273,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+             logger.warning("suggest_library_for_issue failed", exc_info=True)
+             suggestions = []
+         if suggestions:
+-            st.markdown("##### Suggested replies")
++            st.markdown('<div class="jsl-jd-label">Suggested replies</div>', unsafe_allow_html=True)
+             cols = st.columns(min(3, len(suggestions)))
+             for i, sug in enumerate(suggestions[:3]):
+                 with cols[i]:
+@@ -283,7 +284,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+                     ):
+                         st.session_state[_sk(response_id, "body_override")] = sug.get("body") or ""
+                         st.toast("Template applied")
+-                    fb1, fb2 = st.columns(2)
++                    fb1, fb2, _fb = st.columns([1, 1, 8])
+                     if fb1.button("👍", key=_sk(response_id, f"up_{sug.get('id')}")):
+                         try:
+                             from services.suggestion_feedback import record_vote
+@@ -300,21 +301,21 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+                             log_ignored(__name__)
+ 
+     # ---------------- greeting + visibility ----------------
+-    st.markdown("##### Reply & visibility")
+-    g1, g2, g3 = st.columns([2, 2, 2])
+-    mention_mode = g1.radio(
++    st.markdown('<div class="jsl-jd-label">Reply & visibility</div>', unsafe_allow_html=True)
++    mention_mode = st.radio(
+         "Greeting",
+         ["plain", "wiki", "none"],
+-        format_func=lambda x: {
+-            "plain": "Hello Name",
+-            "wiki": "Hello [~user]",
+-            "none": "Hello Customer",
+-        }[x],
++        format_func=lambda x: {"plain": "Hello Name", "wiki": "Hello [~user]", "none": "Hello Customer"}[x],
+         horizontal=True,
+         key=_sk(response_id, "mention_mode"),
++        label_visibility="collapsed",
+     )
+     _apply_pending(response_id, "mention_user")
+-    mention_user = g2.text_input("Wiki user", key=_sk(response_id, "mention_user"))
++    g2, g3 = st.columns([3, 2])
++    mention_user = g2.text_input(
++        "Wiki user", key=_sk(response_id, "mention_user"),
++        disabled=mention_mode != "wiki", placeholder="username to greet (Hello [~user])",
++    )
+     visibility = g3.radio(
+         "Visibility",
+         ["customer", "internal"],
+@@ -323,10 +324,12 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+         key=_sk(response_id, "visibility"),
+     )
+     internal = visibility == "internal"
+-    if internal:
+-        st.warning("**Internal only** — not shared with the customer.")
+-    else:
+-        st.error("**Visible to customer** — shared with the customer.")
++    st.markdown(
++        '<span class="jsl-jd-vis jsl-jd-vis-internal">Internal only · not shared with the customer</span>'
++        if internal else
++        '<span class="jsl-jd-vis jsl-jd-vis-customer">Visible to the customer</span>',
++        unsafe_allow_html=True,
++    )
+ 
+     # ---------------- people ----------------
+     with st.expander("People (mentions & watchers)", expanded=False):
+@@ -452,7 +455,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+         )
+ 
+     # ---------------- actions: time + transitions + attachments ----------------
+-    st.markdown("##### Actions")
++    st.markdown('<div class="jsl-jd-label">Actions</div>', unsafe_allow_html=True)
+     t1, t2 = st.columns(2)
+     time_raw = t1.text_input(
+         "Log time", placeholder="15m / 1h 30m", key=_sk(response_id, "time")
+@@ -490,13 +493,14 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+     )
+     if st.session_state.pop(_sk(response_id, "pending_clear_clip"), None):
+         st.session_state[_sk(response_id, "clipboard_bridge")] = ""
+-    st.text_area(
+-        "Optional: paste a screenshot data-URL",
+-        key=_sk(response_id, "clipboard_bridge"),
+-        height=40,
+-        label_visibility="collapsed",
+-        placeholder="data:image/png;base64,…",
+-    )
++    with st.expander("Paste a screenshot (advanced)", expanded=False):
++        st.text_area(
++            "Screenshot data-URL",
++            key=_sk(response_id, "clipboard_bridge"),
++            height=60,
++            label_visibility="collapsed",
++            placeholder="data:image/png;base64,…",
++        )
+ 
+     # ---------------- resolution (only when closing) ----------------
+     is_closing = st.checkbox("Closing / resolve", key=_sk(response_id, "closing"))
+@@ -615,7 +619,7 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+     bracket_labels = extract_bracket_fields(body_template)
+     field_values: dict[str, str] = {}
+     if bracket_labels:
+-        st.markdown("##### Template fields")
++        st.markdown('<div class="jsl-jd-label">Template fields</div>', unsafe_allow_html=True)
+         st.caption("Fill each field used in the library template. Required before posting.")
+         cols = st.columns(2) if len(bracket_labels) > 1 else [st]
+         for i, label in enumerate(bracket_labels):
+@@ -676,12 +680,12 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+     except Exception:
+         log_ignored(__name__)
+ 
+-    st.markdown("##### Preview")
++    st.markdown('<div class="jsl-jd-label">Preview</div>', unsafe_allow_html=True)
+     st.code(preview or "", language=None, wrap_lines=True)
+     st.caption("Tokens: @TICKET @SUMMARY @ASSIGNEE @PROJECT @STATUS @R · fill [custom fields] above")
+ 
+     # ---------------- safety: plan + placeholders ----------------
+-    st.markdown("##### Before you post")
++    st.markdown('<div class="jsl-jd-label">Before you post</div>', unsafe_allow_html=True)
+     files_n = len(uploads) if uploads else 0
+     _tlabels = [lab for _, lab in transition_chain]
+     plan = action_plan_lines(
+@@ -708,126 +712,87 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
+             + ". Fill template fields or remove them before posting."
+         )
+ 
+-    # ---------------- post ----------------
+-    if st.session_state.get(posted_key):
+-        st.success("Already posted in this dialog.")
+-        if st.button("Post another update", key=_sk(response_id, "post_again")):
+-            st.session_state.pop(posted_key, None)
+-            st.session_state[idem_key] = __import__("uuid").uuid4().hex
+-            st.rerun()
+-        return
+-
+-    can_post = not leftover
+-    if st.button(
+-        "Post to Jira",
+-        type="primary",
+-        key=_sk(response_id, "post"),
+-        disabled=not can_post,
+-        help="Disabled while placeholders remain" if not can_post else "Submit actions to Jira",
+-    ):
+-        results: list[str] = []
+-        errors: list[str] = []
+-        key = issue["key"]
+-
+-        # Comment first
+-        try:
+-            jira_service.add_comment(
+-                user.id,
+-                key,
+-                preview or "",
+-                internal=internal,
+-                idempotency_key=st.session_state.get(idem_key),
+-            )
+-            results.append("✔ Comment")
+-        except Exception as exc:
+-            errors.append(f"✖ Comment: {_msg(exc)}")
+-
+-        # Watchers
+-        try:
+-            watch_ids = _collect_watch_ids(response_id, issue)
+-            if watch_ids and hasattr(jira_service, "add_watchers"):
+-                werr = jira_service.add_watchers(user.id, key, watch_ids)
+-                if werr:
+-                    errors.append("✖ Watchers: " + "; ".join(_safe_text(w) for w in werr[:3]))
+-                else:
+-                    results.append(f"✔ Watchers ({len(watch_ids)})")
+-        except Exception as exc:
+-            errors.append(f"✖ Watchers: {_msg(exc)}")
++    # ---------------- post (sticky footer) ----------------
++    steps_key = _sk(response_id, "steps_done")
++    done: set = st.session_state.setdefault(steps_key, set())
++    with st.container(key=_sk(response_id, "footer")):
++        if st.session_state.get(posted_key):
++            msg = st.session_state[posted_key]
++            st.success(msg if isinstance(msg, str) else "Already posted in this dialog.")
++            if st.button("Post another update", key=_sk(response_id, "post_again"), width="stretch"):
++                # no st.rerun(): inside a dialog it would close the dialog
++                st.session_state.pop(posted_key, None)
++                st.session_state[steps_key] = done = set()
++                st.session_state[idem_key] = uuid.uuid4().hex
++            else:
++                return
+ 
+-        # Attachments — per-file isolation
+-        if uploads:
+-            for f in uploads:
+-                try:
+-                    name = _safe_filename(f.name)
+-                    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+-                    if ext not in _EXT_WHITELIST:
+-                        errors.append(f"✖ File {name}: unsupported extension")
+-                        continue
+-                    mime = getattr(f, "type", None) or ""
+-                    if mime and mime not in _MIME_WHITELIST:
+-                        errors.append(f"✖ File {name}: unsupported MIME {mime}")
+-                        continue
+-                    data = f.getvalue()
+-                    if len(data) > _MAX_ATTACH_BYTES:
+-                        errors.append(f"✖ File {name}: exceeds 25 MB")
+-                        continue
+-                    jira_service.add_attachment(user.id, key, name, data, mime or None)
+-                    results.append(f"✔ File {name}")
+-                except Exception as exc:
+-                    errors.append(f"✖ File: {_msg(exc)}")
+-
+-        # Pasted screenshot
+-        paste_val = st.session_state.get(_sk(response_id, "clipboard_bridge")) or ""
+-        if isinstance(paste_val, str) and paste_val.startswith("data:image"):
+-            try:
+-                if not _DATA_URL_RE.match(paste_val):
+-                    raise ValueError("Only PNG/JPEG/GIF/WEBP data-URLs accepted")
+-                header, b64data = paste_val.split(",", 1)
+-                ext = "jpg" if ("jpeg" in header or "jpg" in header) else header.split("/")[1].split(";")[0]
+-                raw_b = base64.b64decode(b64data, validate=True)
+-                if len(raw_b) > _MAX_PASTE_BYTES:
+-                    raise ValueError("Pasted image exceeds 8 MB")
+-                fname = _safe_filename(f"paste_{key}.{ext}")
+-                jira_service.add_attachment(user.id, key, fname, raw_b, f"image/{ext}")
+-                results.append(f"✔ Screenshot {fname}")
++        can_post = not leftover
++        label = "Retry failed steps" if done else "Post to Jira"
++        if st.button(
++            label,
++            type="primary",
++            key=_sk(response_id, "post"),
++            disabled=not can_post,
++            width="stretch",
++            help="Disabled while placeholders remain" if not can_post else "Run the selected actions",
++        ):
++            key = issue["key"]
++            files, problems = _prepare_files(uploads, st.session_state.get(_sk(response_id, "clipboard_bridge")) or "", key)
++            with st.spinner("Posting…"):
++                out = run_post_steps(
++                    user.id,
++                    key,
++                    comment=preview or "",
++                    internal=internal,
++                    idempotency_key=st.session_state[idem_key],
++                    done=done,
++                    watchers=_collect_watch_ids(response_id, issue),
++                    files=files,
++                    time_raw=time_raw,
++                    chain=transition_chain,
++                )
++            st.session_state[steps_key] = done
++            if any(n.startswith("file:paste_") for n in done):
+                 st.session_state[_sk(response_id, "pending_clear_clip")] = True
+-            except Exception as exc:
+-                errors.append(f"✖ Paste: {_msg(exc)}")
+-
+-        # Worklog
+-        if (time_raw or "").strip():
+-            try:
+-                spent = jira_service.log_work(user.id, key, time_raw)
+-                results.append(f"✔ Time {_safe_text(spent)}")
+-            except Exception as exc:
+-                errors.append(f"✖ Worklog: {_msg(exc)}")
+-
+-        # Transitions
+-        if transition_chain:
+-            try:
+-                if len(transition_chain) == 1:
+-                    jira_service.transition_issue(
+-                        user.id, key, transition_chain[0][0], label=transition_chain[0][1]
+-                    )
+-                    results.append(f"✔ → {_safe_text(transition_chain[0][1])}")
+-                else:
+-                    applied = jira_service.multi_step_transition(
+-                        user.id,
+-                        key,
+-                        [x[0] for x in transition_chain],
+-                        labels=[x[1] for x in transition_chain],
+-                    )
+-                    results.append("✔ → " + " → ".join(_safe_text(a) for a in applied))
+-            except Exception as exc:
+-                errors.append(f"✖ Transition: {_msg(exc)}")
+-
+-        if results and not errors:
+-            st.session_state[posted_key] = True
+-        if results:
+-            st.success(
+-                f"**Posted to {_safe_text(key)}**\n\n"
+-                + "\n".join(f"• {r}" for r in results)
+-            )
+-        for e in errors:
+-            st.error(e)
+-            logger.error("jira post step failed: %s", e)
++            errors = problems + out.errors
++            if out.results:
++                st.success(f"**Posted to {_safe_text(key)}**\n\n" + "\n".join(f"- {_safe_text(r)}" for r in out.results))
++            for e in errors:
++                st.error(_safe_text("✖ " + e))
++            if errors and done:
++                st.caption("Steps that finished are kept. Click the button again to retry only what failed.")
++            if out.results and not errors:
++                st.session_state[posted_key] = f"Posted to {_safe_text(key)} ({len(out.results)} action(s))."
++
++
++def _prepare_files(uploads, paste_val: str, key: str) -> tuple[list[tuple[str, bytes, str | None]], list[str]]:
++    """Validate uploaded files and an optional pasted screenshot. Returns (files, problems)."""
++    files: list[tuple[str, bytes, str | None]] = []
++    problems: list[str] = []
++    for f in uploads or []:
++        name = _safe_filename(f.name)
++        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
++        mime = getattr(f, "type", None) or ""
++        data = f.getvalue()
++        if ext not in _EXT_WHITELIST:
++            problems.append(f"File {name}: unsupported extension")
++        elif mime and mime not in _MIME_WHITELIST:
++            problems.append(f"File {name}: unsupported type {mime}")
++        elif len(data) > _MAX_ATTACH_BYTES:
++            problems.append(f"File {name}: larger than {JIRA_MAX_ATTACHMENT_MB} MB")
++        else:
++            files.append((name, data, mime or None))
++    if isinstance(paste_val, str) and paste_val.startswith("data:image"):
++        try:
++            if not _DATA_URL_RE.match(paste_val):
++                raise ValueError("Only PNG/JPEG/GIF/WEBP data-URLs are accepted")
++            header, b64data = paste_val.split(",", 1)
++            ext = "jpg" if ("jpeg" in header or "jpg" in header) else header.split("/")[1].split(";")[0]
++            raw = base64.b64decode(b64data, validate=True)
++            if len(raw) > _MAX_PASTE_BYTES:
++                raise ValueError("Pasted image is larger than 8 MB")
++            files.append((_safe_filename(f"paste_{key}.{ext}"), raw, f"image/{ext}"))
++        except ValueError as exc:
++            problems.append(f"Paste: {exc}")
++    return files, problems
+diff --git a/views/settings.py b/views/settings.py
+index bbce364..a23b52d 100644
+--- a/views/settings.py
++++ b/views/settings.py
+@@ -1,6 +1,6 @@
+ """Unified Personal Settings — appearance, layout, account, Jira connection."""
+ from __future__ import annotations
+-from utils.errors import safe_message, log_ignored
++from utils.errors import log_ignored
+ from config import APP_NAME, APP_VERSION, APP_BUILD_LABEL
+ 
+ import streamlit as st
+@@ -145,15 +145,3 @@ def render(user) -> None:
+ 
+     with tab_jira:
+         render_jira_settings(user)
+-        _render_snipeit_section(user)
+-
+-
+-def _render_snipeit_section(user):
+-    import streamlit as st
+-    try:
+-        from views import snipeit_settings
+-        st.divider()
+-        st.subheader("Snipe-IT")
+-        snipeit_settings.render(user, embedded=True)
+-    except Exception as exc:
+-        st.caption(f"Snipe-IT settings unavailable: {safe_message(exc)}")
+-- 
+2.43.0
+
