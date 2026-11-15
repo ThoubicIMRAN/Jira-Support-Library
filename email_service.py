@@ -18,14 +18,12 @@ from utils.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
-
 def get_active_smtp(db):
     return db.scalar(
         select(SMTPConfig)
         .where(SMTPConfig.is_active.is_(True))
         .order_by(SMTPConfig.id.desc())
     )
-
 
 def _env_smtp_override() -> dict | None:
     host = os.getenv("SMTP_HOST", "").strip()
@@ -42,7 +40,6 @@ def _env_smtp_override() -> dict | None:
         "use_ssl": os.getenv("SMTP_USE_SSL", "false").lower() in ("1", "true", "yes"),
     }
 
-
 def _normalize_flags(port: int, use_tls: bool, use_ssl: bool) -> tuple[bool, bool]:
     port = int(port)
     if use_tls and use_ssl:
@@ -52,7 +49,6 @@ def _normalize_flags(port: int, use_tls: bool, use_ssl: bool) -> tuple[bool, boo
     if port == 587 and not use_tls and not use_ssl:
         return True, False
     return bool(use_tls), bool(use_ssl)
-
 
 def _load_config() -> dict:
     env = _env_smtp_override()
@@ -73,136 +69,79 @@ def _load_config() -> dict:
             logger.exception("SMTP password decrypt failed")
             raise RuntimeError(
                 "Could not decrypt the stored SMTP password (FERNET_KEY / APP_SECRET_KEY "
-                "may have changed). Re-enter the password and Save, or set SMTP_PASSWORD in env."
+                "mismatch or corrupt ciphertext). Re-save the password in Admin Settings."
             ) from exc
-
+        use_tls, use_ssl = _normalize_flags(cfg.port, bool(cfg.use_tls), bool(cfg.use_ssl))
         return {
             "host": (cfg.host or "").strip(),
             "port": int(cfg.port or 587),
             "username": (cfg.username or "").strip(),
             "password": password,
-            "sender_email": (cfg.sender_email or "").strip(),
+            "sender_email": (cfg.sender_email or cfg.username or "").strip(),
             "sender_name": (cfg.sender_name or APP_NAME).strip() or APP_NAME,
-            "use_tls": bool(cfg.use_tls),
-            "use_ssl": bool(cfg.use_ssl),
+            "use_tls": use_tls,
+            "use_ssl": use_ssl,
             "source": "database",
         }
 
-
-def _open_client(host: str, port: int, use_tls: bool, use_ssl: bool, timeout: float = 30.0):
-    context = ssl.create_default_context()
-    if use_ssl:
-        client = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
-        client.ehlo()
-        return client
-    client = smtplib.SMTP(host, port, timeout=timeout)
-    client.ehlo()
-    if use_tls:
-        client.starttls(context=context)
-        client.ehlo()
-    return client
-
-
-def diagnose_smtp() -> dict:
-    info: dict = {"ok": False, "steps": []}
-    try:
-        cfg = _load_config()
-    except Exception as exc:
-        info["steps"].append(f"Config: FAIL — {exc}")
-        info["error"] = str(exc)
-        return info
-
-    info["source"] = cfg["source"]
-    info["host"] = cfg["host"]
-    info["port"] = cfg["port"]
-    use_tls, use_ssl = _normalize_flags(cfg["port"], cfg["use_tls"], cfg["use_ssl"])
-    info["mode"] = "SSL" if use_ssl else ("STARTTLS" if use_tls else "plain")
-    info["steps"].append(f"Config OK (source={cfg['source']}, mode={info['mode']})")
-
-    if not cfg["host"]:
-        info["error"] = "SMTP host is empty"
-        info["steps"].append("Host: FAIL — empty")
-        return info
-
-    try:
-        socket.create_connection((cfg["host"], int(cfg["port"])), timeout=10).close()
-        info["steps"].append(f"TCP {cfg['host']}:{cfg['port']}: OK")
-    except OSError as exc:
-        info["error"] = f"Cannot reach {cfg['host']}:{cfg['port']} — {exc}"
-        info["steps"].append(f"TCP: FAIL — {exc}")
-        return info
-
-    client = None
-    try:
-        client = _open_client(cfg["host"], cfg["port"], use_tls, use_ssl, timeout=20)
-        info["steps"].append("SMTP handshake: OK")
-        if cfg["username"]:
-            if not cfg["password"]:
-                info["error"] = "Username set but password is empty"
-                info["steps"].append("Auth: FAIL — no password")
-                return info
-            client.login(cfg["username"], cfg["password"])
-            info["steps"].append("Auth (LOGIN): OK")
-        else:
-            info["steps"].append("Auth: skipped (no username)")
-        info["ok"] = True
-    except smtplib.SMTPAuthenticationError as exc:
-        info["error"] = (
-            "Authentication failed. For Microsoft 365 / Google use an app password "
-            "if MFA is enabled. Username is usually the full email address."
-        )
-        info["steps"].append(f"Auth: FAIL — {exc}")
-    except smtplib.SMTPException as exc:
-        info["error"] = f"SMTP error: {exc}"
-        info["steps"].append(f"SMTP: FAIL — {exc}")
-    except OSError as exc:
-        info["error"] = f"Network/TLS error: {exc}"
-        info["steps"].append(f"Network: FAIL — {exc}")
-    finally:
-        if client is not None:
-            try:
-                client.quit()
-            except Exception:
-                try:
-                    client.close()
-                except Exception:
-                    pass
-    return info
-
-
-def send_html_email(recipient: str, subject: str, html_body: str) -> None:
-    recipient = (recipient or "").strip()
-    if not recipient or "@" not in recipient:
-        raise RuntimeError("A valid recipient email address is required.")
+def send_email(to_email, subject, html_body):
+    to_email = (to_email or "").strip()
+    if not to_email or "@" not in to_email:
+        raise RuntimeError("Recipient email is missing or invalid.")
 
     cfg = _load_config()
-    if not cfg["host"] or not cfg["sender_email"]:
-        raise RuntimeError("SMTP host and sender email are required.")
+    host = cfg["host"]
+    port = int(cfg["port"])
+    username = cfg["username"]
+    password = cfg["password"]
+    sender_email = cfg["sender_email"] or username
+    sender_name = cfg["sender_name"]
+    use_tls, use_ssl = _normalize_flags(port, cfg["use_tls"], cfg["use_ssl"])
 
-    if cfg["username"] and not cfg["password"]:
-        raise RuntimeError(
-            "SMTP username is set but password is empty. "
-            "Re-save the password in Admin Settings or set SMTP_PASSWORD."
-        )
+    if not host:
+        raise RuntimeError("SMTP host is empty.")
+    if not sender_email:
+        raise RuntimeError("Sender email is empty. Set From email in SMTP settings.")
 
-    use_tls, use_ssl = _normalize_flags(cfg["port"], cfg["use_tls"], cfg["use_ssl"])
+    try:
+        socket.getaddrinfo(host, port)
+    except socket.gaierror as exc:
+        raise RuntimeError(f"Cannot resolve SMTP host {host!r}: {exc}") from exc
 
-    message = MIMEMultipart("alternative")
-    message["Subject"] = subject
-    message["From"] = formataddr((cfg["sender_name"], cfg["sender_email"]))
-    message["To"] = recipient
-    message.attach(MIMEText(html_body, "html", "utf-8"))
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = formataddr((sender_name, sender_email))
+    msg["To"] = to_email
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
+    timeout = float(os.getenv("SMTP_TIMEOUT", "30") or 30)
     client = None
     try:
-        client = _open_client(cfg["host"], int(cfg["port"]), use_tls, use_ssl, timeout=30)
-        if cfg["username"]:
-            client.login(cfg["username"], cfg["password"])
-        refused = client.sendmail(cfg["sender_email"], [recipient], message.as_string())
+        if use_ssl:
+            context = ssl.create_default_context()
+            client = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
+        else:
+            client = smtplib.SMTP(host, port, timeout=timeout)
+            client.ehlo()
+            if use_tls:
+                context = ssl.create_default_context()
+                client.starttls(context=context)
+                client.ehlo()
+
+        if username:
+            client.login(username, password or "")
+
+        refused = client.sendmail(sender_email, [to_email], msg.as_string())
         if refused:
-            raise RuntimeError(f"Server refused recipients: {refused}")
+            raise RuntimeError(f"SMTP refused recipient(s): {refused}")
+
+        logger.info(
+            "Email sent via %s:%s (%s) to %s subject=%r",
+            host, port, cfg.get("source"), to_email, subject,
+        )
+        return True
+
     except smtplib.SMTPAuthenticationError as exc:
-        logger.exception("SMTP auth failed")
         raise RuntimeError(
             "SMTP authentication failed. Check username/password "
             "(Office 365 / Gmail often require an app password with MFA)."
@@ -223,7 +162,7 @@ def send_html_email(recipient: str, subject: str, html_body: str) -> None:
     except ssl.SSLError as exc:
         raise RuntimeError(
             f"TLS/SSL error: {exc}. Try port 587 + STARTTLS, or port 465 + Implicit SSL."
-        ) from exc
+        ) from exp
     except OSError as exc:
         logger.exception("SMTP network error")
         raise RuntimeError(f"SMTP network error: {exc}") from exc
@@ -239,7 +178,6 @@ def send_html_email(recipient: str, subject: str, html_body: str) -> None:
                     client.close()
                 except Exception:
                     pass
-
 
 def branded_email(title, message, action_label=None, action_url=None):
     action = (
