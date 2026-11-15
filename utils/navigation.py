@@ -29,6 +29,7 @@ PAGE_ADMIN_SETTINGS = "admin_settings"
 PAGE_SUPPORT = "support"
 PAGE_DASHBOARD = "dashboard"
 PAGE_WHATS_NEW = "whats_new"
+PAGE_LEGAL = "legal"
 PAGE_ASSETS = "assets"  # Snipe-IT asset management hub
 
 VALID_PAGES = {
@@ -48,6 +49,7 @@ VALID_PAGES = {
     PAGE_SUPPORT,
     PAGE_DASHBOARD,
     PAGE_WHATS_NEW,
+    PAGE_LEGAL,
     PAGE_ASSETS,
 }
 
