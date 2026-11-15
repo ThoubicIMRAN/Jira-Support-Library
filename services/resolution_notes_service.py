@@ -33,6 +33,7 @@ def draft_resolution_notes(
     extra_context: str = "",
     manual_title: str = "",
     manual_excerpt: str = "",
+    use_ai: bool = True,
 ) -> str:
     if (manual_excerpt or "").strip():
         page = {
@@ -47,7 +48,7 @@ def draft_resolution_notes(
     try:
         from services.ai_service import chat, ollama_available
 
-        if ollama_available():
+        if use_ai and ollama_available():
             system = (
                 "You write short Jira resolution notes for support engineers.\n"
                 "Output ONLY the notes text (no title line).\n"
