@@ -162,7 +162,7 @@ def send_email(to_email, subject, html_body):
     except ssl.SSLError as exc:
         raise RuntimeError(
             f"TLS/SSL error: {exc}. Try port 587 + STARTTLS, or port 465 + Implicit SSL."
-        ) from exp
+        ) from exc
     except OSError as exc:
         logger.exception("SMTP network error")
         raise RuntimeError(f"SMTP network error: {exc}") from exc
