@@ -35,12 +35,13 @@ from utils.logging_config import configure_logging, new_correlation_id  # noqa: 
 from utils.navigation import (  # noqa: E402
     PAGE_ADMIN, PAGE_ADMIN_SETTINGS, PAGE_AI, PAGE_HEALTH, PAGE_HOME, PAGE_SUPPORT,
     PAGE_NOTIFICATIONS, PAGE_DASHBOARD, PAGE_WHATS_NEW,
-    PAGE_PROFILE, PAGE_PROJECT, PAGE_SECURITY_ADMIN, PAGE_SETTINGS, PAGE_WORKSPACE, goto,
+    PAGE_PROFILE, PAGE_PROJECT, PAGE_SECURITY_ADMIN, PAGE_SETTINGS, PAGE_WORKSPACE,
+    PAGE_LEGAL, goto,
 )
 from views import support  # noqa: F401
 from views import (  # noqa: E402
     admin_panel, admin_settings, ai_assistant, change_password, health, home, login,
-    my_dashboard, notifications, whats_new, profile, project_view, security_admin, settings, workspace,
+    my_dashboard, notifications, whats_new, profile, project_view, security_admin, settings, workspace, legal,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ PAGE_RENDERERS = {
     PAGE_DASHBOARD: my_dashboard.render,
     PAGE_WHATS_NEW: whats_new.render,
     PAGE_SUPPORT: support.render,
+    PAGE_LEGAL: lambda u: legal.render(u, section=st.session_state.get("legal_section", "privacy")),
 }
 
 BREADCRUMB_LABELS = {
@@ -80,6 +82,7 @@ BREADCRUMB_LABELS = {
     PAGE_DASHBOARD: "My Dashboard",
     PAGE_WHATS_NEW: "What's New",
     PAGE_SUPPORT: "Support",
+    PAGE_LEGAL: "Legal",
 }
 
 
@@ -162,6 +165,20 @@ def _resolve_user() -> User | None:
     st.session_state.last_activity = time.time()
     return _load_user(known_id)
 
+
+# Public legal pages (no session required)
+_public_page = st.session_state.get("page")
+if _public_page == PAGE_LEGAL or st.query_params.get("legal") in ("privacy", "terms"):
+    if st.query_params.get("legal") in ("privacy", "terms"):
+        st.session_state["legal_section"] = st.query_params.get("legal")
+        st.session_state["page"] = PAGE_LEGAL
+    from views import legal as legal_view
+    legal_view.render(None, section=st.session_state.get("legal_section", "privacy"))
+    if st.button("← Back to sign in", key="legal_back_login"):
+        st.session_state["page"] = PAGE_HOME
+        st.session_state.pop("legal_section", None)
+        st.rerun()
+    st.stop()
 
 user = _resolve_user()
 if not user or not user.is_active:
