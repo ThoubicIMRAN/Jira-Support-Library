@@ -28,6 +28,7 @@ from services.account_service import (
 from services.cookie_service import set_session_cookie
 from services.session_service import create_session
 from utils.validators import valid_password
+from components.cookie_notice import render_cookie_notice
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,6 @@ def reset_screen(token: str) -> None:
                 st.error("The reset link is invalid or has already been used.")
 
 
-
 def invitation_screen(token: str) -> None:
     invitation = validate_invitation(token)
     if not invitation:
@@ -136,7 +136,6 @@ def invitation_screen(token: str) -> None:
                 st.rerun()
             else:
                 st.error("Could not accept invitation. It may already have been used.")
-
 
 
 def _render_sign_in() -> None:
@@ -247,6 +246,8 @@ def render() -> None:
     if _oauth_callback():
         return
 
+    render_cookie_notice()
+
     st.markdown(
         '<div class="jsl-hero"><div class="jsl-hero-tag">IT Operations</div>'
         "<h1>Jira Support Library</h1>"
@@ -273,3 +274,19 @@ def render() -> None:
             _render_sign_up()
         else:
             _render_forgot()
+
+    st.markdown("---")
+    st.caption(
+        "By signing in you agree to the Terms of Use. "
+        "Read our Privacy Policy for how account and session data is handled."
+    )
+    lc1, lc2, lc3 = st.columns(3)
+    if lc1.button("Privacy Policy", key="login_privacy"):
+        st.session_state["page"] = "legal"
+        st.session_state["legal_section"] = "privacy"
+        st.rerun()
+    if lc2.button("Terms of Use", key="login_terms"):
+        st.session_state["page"] = "legal"
+        st.session_state["legal_section"] = "terms"
+        st.rerun()
+    lc3.markdown("**Sign in** to open your command library →")
