@@ -621,15 +621,26 @@ def jira_action_dialog(user, project, response_body: str, response_id: str = "x"
     if bracket_labels:
         st.markdown('<div class="jsl-jd-label">Template fields</div>', unsafe_allow_html=True)
         st.caption("Fill each field used in the library template. Required before posting.")
-        cols = st.columns(2) if len(bracket_labels) > 1 else [st]
-        for i, label in enumerate(bracket_labels):
+        # Never use ``with st:`` — the streamlit module is not a context manager.
+        # Only DeltaGenerator columns from st.columns() support the with-protocol.
+        if len(bracket_labels) == 1:
+            label = bracket_labels[0]
             key = _sk(response_id, "tf_" + label.lower().replace(" ", "_")[:40])
-            with cols[i % len(cols)]:
-                field_values[label] = st.text_input(
-                    label,
-                    key=key,
-                    placeholder=f"Value for [{label}]",
-                )
+            field_values[label] = st.text_input(
+                label,
+                key=key,
+                placeholder=f"Value for [{label}]",
+            )
+        else:
+            cols = st.columns(2)
+            for i, label in enumerate(bracket_labels):
+                key = _sk(response_id, "tf_" + label.lower().replace(" ", "_")[:40])
+                with cols[i % 2]:
+                    field_values[label] = st.text_input(
+                        label,
+                        key=key,
+                        placeholder=f"Value for [{label}]",
+                    )
 
     reporter = issue.get("reporter") or "Customer"
     preview = build_comment_preview(
