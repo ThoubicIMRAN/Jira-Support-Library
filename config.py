@@ -83,7 +83,7 @@ def _csv_env(name: str, *, strip_at: bool = False) -> tuple[str, ...]:
 # App identity
 # --------------------------------------------------------------------------- #
 APP_NAME = "Jira Support Library"
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.6.0"
 APP_BUILD_LABEL = "2026-11-23 · Passkeys · App bar · Role-based admin"
 
 _raw_root = os.getenv("APP_ROOT_PATH", "").strip().strip("/")
