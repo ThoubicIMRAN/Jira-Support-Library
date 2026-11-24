@@ -3,6 +3,7 @@
 Source of truth: docs/releases.json (update on every release).
 See docs/RELEASE_PROCESS.md and docs/BUGFIXES.md.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,9 @@ def _load_releases() -> list[dict]:
 def render(user) -> None:
     page_header("✨ What's New")
     st.caption(f"{APP_NAME} · current version **{APP_VERSION}**")
-    st.caption("Release notes are maintained in `docs/releases.json`. Bug fixes: `docs/BUGFIXES.md`.")
+    st.caption(
+        "Release notes are maintained in `docs/releases.json`. Bug fixes: `docs/BUGFIXES.md`."
+    )
 
     releases = _load_releases()
     if not releases:
@@ -45,6 +48,7 @@ def render(user) -> None:
         title = rel.get("title") or ""
         features = rel.get("features") or rel.get("items") or []
         fixes = rel.get("fixes") or []
+        security = rel.get("security") or []
         with st.container(border=True):
             st.markdown(f"### v{version} · {date}")
             if title:
@@ -56,4 +60,8 @@ def render(user) -> None:
             if fixes:
                 st.markdown("**Bug fixes**")
                 for item in fixes:
+                    st.markdown(f"- {item}")
+            if security:
+                st.markdown("**Security**")
+                for item in security:
                     st.markdown(f"- {item}")

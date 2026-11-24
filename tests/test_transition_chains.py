@@ -1,4 +1,5 @@
 """Package 3 transition chain CRUD (app DB)."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -12,7 +13,9 @@ def test_transition_chain_crud_roundtrip():
     init_db()
     with SessionLocal() as db:
         for row in db.scalars(
-            select(JiraTransitionChain).where(JiraTransitionChain.name == "ci-test-chain")
+            select(JiraTransitionChain).where(
+                JiraTransitionChain.name == "ci-test-chain"
+            )
         ).all():
             db.delete(row)
         db.commit()
@@ -39,9 +42,7 @@ def test_resolve_chain_to_labels_matches_raw_and_friendly(monkeypatch):
             {"id": "2", "name": "Resolve Issue", "label": "Resolve"},
         ]
 
-    monkeypatch.setattr(
-        "services.jira_service.list_transitions_friendly", fake_list
-    )
+    monkeypatch.setattr("services.jira_service.list_transitions_friendly", fake_list)
     labels = chains.resolve_chain_to_labels(
         1, "SIT-1", ["Start Progress", "Resolve Issue"], jira_project_key="SIT"
     )

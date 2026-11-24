@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <button id="passkey-action" type="button">Continue</button>
+    <p id="passkey-status" role="status" aria-live="polite"></p>
+    <script>
+      const action = document.getElementById("passkey-action");
+      const status = document.getElementById("passkey-status");
+      let config = null;
+
+      function send(type, extra = {}) {
+        window.parent.postMessage({ isStreamlitMessage: true, type, ...extra }, "*");
+      }
+
+      function decodeBase64Url(value) {
+        const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+        const binary = atob(padded);
+        return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      }
+
+      function encodeBase64Url(buffer) {
+        let binary = "";
+        for (const byte of new Uint8Array(buffer)) {
+          binary += String.fromCharCode(byte);
+        }
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      }
+
+      function publicKeyOptions(options, mode) {
+        const publicKey = { ...options, challenge: decodeBase64Url(options.challenge) };
+        if (mode === "registration") {
+          publicKey.user = { ...options.user, id: decodeBase64Url(options.user.id) };
+          if (options.excludeCredentials) {
+            publicKey.excludeCredentials = options.excludeCredentials.map((credential) => ({
+              ...credential,
+              id: decodeBase64Url(credential.id),
+            }));
+          }
+        } else if (options.allowCredentials) {
+          publicKey.allowCredentials = options.allowCredentials.map((credential) => ({
+            ...credential,
+            id: decodeBase64Url(credential.id),
+          }));
+        }
+        return publicKey;
+      }
+
+      function serializeCredential(credential, mode) {
+        const response = credential.response;
+        const serializedResponse = {
+          clientDataJSON: encodeBase64Url(response.clientDataJSON),
+        };
+        if (mode === "registration") {
+          serializedResponse.attestationObject = encodeBase64Url(response.attestationObject);
+        } else {
+          serializedResponse.authenticatorData = encodeBase64Url(response.authenticatorData);
+          serializedResponse.signature = encodeBase64Url(response.signature);
+          serializedResponse.userHandle = response.userHandle
+            ? encodeBase64Url(response.userHandle)
+            : null;
+        }
+        const result = {
+          id: credential.id,
+          rawId: encodeBase64Url(credential.rawId),
+          type: credential.type,
+          response: serializedResponse,
+          clientExtensionResults: {},
+        };
+        if (credential.authenticatorAttachment) {
+          result.authenticatorAttachment = credential.authenticatorAttachment;
+        }
+        if (mode === "registration" && response.getTransports) {
+          result.transports = response.getTransports();
+        }
+        return result;
+      }
+
+      function validateRelyingParty() {
+        let expectedOrigin;
+        try {
+          expectedOrigin = new URL(config.expected_origin).origin;
+        } catch {
+          return "Passkey setup is misconfigured. Set WEBAUTHN_ORIGIN to the public site origin.";
+        }
+        if (expectedOrigin !== window.location.origin) {
+          return "This site's origin does not match WEBAUTHN_ORIGIN. Check the public URL configuration.";
+        }
+
+        const configuredRpId =
+          config.mode === "registration"
+            ? config.options.rp && config.options.rp.id
+            : config.options.rpId;
+        const host = window.location.hostname.toLowerCase().replace(/\.$/, "");
+        const rpId = String(configuredRpId || "")
+          .toLowerCase()
+          .replace(/\.$/, "");
+        if (!rpId || (host !== rpId && !host.endsWith(`.${rpId}`))) {
+          return "This site's host does not match WEBAUTHN_RP_ID. Check the relying-party configuration.";
+        }
+        return null;
+      }
+
+      action.addEventListener("click", async () => {
+        if (!config || !window.isSecureContext || !navigator.credentials) {
+          status.textContent =
+            "Passkeys require a secure HTTPS connection (localhost is allowed for development).";
+          return;
+        }
+        const configurationError = validateRelyingParty();
+        if (configurationError) {
+          status.textContent = configurationError;
+          return;
+        }
+        action.disabled = true;
+        status.textContent = "Waiting for your authenticator…";
+        try {
+          const credentialOptions = publicKeyOptions(config.options, config.mode);
+          const credential =
+            config.mode === "registration"
+              ? await navigator.credentials.create({ publicKey: credentialOptions })
+              : await navigator.credentials.get({ publicKey: credentialOptions });
+          if (!credential) {
+            throw new Error("No credential was returned by the authenticator.");
+          }
+          send("streamlit:setComponentValue", {
+            value: serializeCredential(credential, config.mode),
+            dataType: "json",
+          });
+          status.textContent = "Passkey verified. Saving…";
+        } catch (error) {
+          const errorName = error && typeof error.name === "string" ? error.name : "UnknownError";
+          const messages = {
+            NotAllowedError:
+              "The request was cancelled, timed out, or blocked by the browser. Try again.",
+            NotSupportedError:
+              "This browser or authenticator does not support the requested passkey.",
+            SecurityError:
+              "The site's passkey security settings do not match. Check HTTPS, WEBAUTHN_RP_ID, and WEBAUTHN_ORIGIN.",
+            InvalidStateError: "This passkey is already registered. Try a different authenticator.",
+            TypeError: "The passkey options are invalid. Check the relying-party configuration.",
+          };
+          status.textContent = `${messages[errorName] || "The passkey request failed. Check your authenticator and try again."} (${errorName})`;
+        } finally {
+          action.disabled = false;
+        }
+      });
+
+      window.addEventListener("message", (event) => {
+        if (
+          event.source !== window.parent ||
+          !event.data ||
+          event.data.type !== "streamlit:render"
+        ) {
+          return;
+        }
+        config = event.data.args;
+        action.textContent =
+          config.mode === "registration" ? "Set up passkey" : "Sign in with passkey";
+        send("streamlit:setFrameHeight", { height: 100 });
+      });
+
+      send("streamlit:componentReady", { apiVersion: 1 });
+    </script>
+  </body>
+</html>

@@ -5,6 +5,7 @@ file bytes (the browser-supplied MIME type is ignored), decoding is verified, de
 bombs are rejected, EXIF/metadata is dropped and the result is re-encoded as a small PNG.
 Only the re-encoded bytes are stored or served.
 """
+
 from __future__ import annotations
 
 import io
@@ -19,7 +20,9 @@ class ImageError(ValueError):
     """Message is safe to show to the user."""
 
 
-def process_image(raw: bytes, *, max_bytes: int, size: tuple[int, int], square: bool = True) -> bytes:
+def process_image(
+    raw: bytes, *, max_bytes: int, size: tuple[int, int], square: bool = True
+) -> bytes:
     if not raw:
         raise ImageError("No image data received.")
     if len(raw) > max_bytes:
@@ -33,12 +36,20 @@ def process_image(raw: bytes, *, max_bytes: int, size: tuple[int, int], square: 
         img.load()
     except ImageError:
         raise
-    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ):
         raise ImageError("That file is not a valid image.") from None
     img = ImageOps.exif_transpose(img).convert("RGBA")
     img = ImageOps.fit(img, size, method=Image.LANCZOS) if square else img
     if not square:
         img.thumbnail(size, Image.LANCZOS)
     out = io.BytesIO()
-    img.save(out, format="PNG", optimize=True)     # fresh encode: no metadata, no trailing data
+    img.save(
+        out, format="PNG", optimize=True
+    )  # fresh encode: no metadata, no trailing data
     return out.getvalue()

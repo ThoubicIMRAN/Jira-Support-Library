@@ -1,21 +1,21 @@
 """High-level Jira operations for the Support Library app."""
+
 from __future__ import annotations
 
-import threading
-import time
-
-from utils.errors import log_ignored
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 
-from config import JIRA_BASE_URL, JIRA_PRODUCT, JIRA_REQUEST_TIMEOUT, JIRA_ENABLED
-from database import SessionLocal, AuditLog
+from config import JIRA_BASE_URL, JIRA_ENABLED, JIRA_PRODUCT, JIRA_REQUEST_TIMEOUT
+from database import AuditLog, SessionLocal
 from services.jira_client import JiraClient, JiraError
-from utils.security import encrypt_secret, decrypt_secret
+from utils.errors import log_ignored
+from utils.security import decrypt_secret, encrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ def credential_status(user_id: int) -> dict[str, Any]:
 
 
 def get_jira_project_key(app_project_id: int) -> str | None:
-    from database import ProjectJiraLink, Project
+    from database import Project, ProjectJiraLink
 
     with SessionLocal() as db:
         link = db.scalar(
@@ -242,11 +242,7 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
         or reporter.get("emailAddress")
         or "Customer"
     )
-    reporter_username = (
-        reporter.get("name")
-        or reporter.get("accountId")
-        or ""
-    )
+    reporter_username = reporter.get("name") or reporter.get("accountId") or ""
     return {
         "key": data.get("key") or key,
         "summary": f.get("summary") or "",
@@ -263,7 +259,7 @@ def load_issue(user_id: int, raw_ticket: str) -> dict[str, Any]:
 
 _RECENT_COMMENTS: dict[tuple, float] = {}
 _RECENT_LOCK = threading.Lock()
-_IDEMPOTENCY_TTL = 600.0      # seconds a successful post blocks an identical retry
+_IDEMPOTENCY_TTL = 600.0  # seconds a successful post blocks an identical retry
 
 
 def _already_posted(key: tuple) -> bool:
@@ -279,7 +275,14 @@ def _remember_posted(key: tuple) -> None:
         _RECENT_COMMENTS[key] = time.monotonic()
 
 
-def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = False, idempotency_key: str | None = None) -> bool:
+def add_comment(
+    user_id: int,
+    issue_key: str,
+    body: str,
+    *,
+    internal: bool = False,
+    idempotency_key: str | None = None,
+) -> bool:
     """Post a comment. Returns True if posted, False if an identical request already succeeded.
 
     ``idempotency_key`` makes retries safe: once a post with that key succeeded, repeating it
@@ -287,13 +290,16 @@ def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = Fal
     attempt can be retried.
     """
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     body = (body or "").strip()
     if not body:
         raise JiraError("Comment body is empty.")
     dedupe = (user_id, issue_key, idempotency_key) if idempotency_key else None
     if dedupe and _already_posted(dedupe):
-        logger.info("Skipped duplicate comment on %s (idempotency key already used)", issue_key)
+        logger.info(
+            "Skipped duplicate comment on %s (idempotency key already used)", issue_key
+        )
         return False
     client = get_client_for_user(user_id)
     try:
@@ -302,7 +308,12 @@ def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = Fal
         client.add_comment(issue_key, body)
     if dedupe:
         _remember_posted(dedupe)
-    _audit(user_id, "jira_comment", issue_key, ("[internal] " if internal else "") + body[:200])
+    _audit(
+        user_id,
+        "jira_comment",
+        issue_key,
+        ("[internal] " if internal else "") + body[:200],
+    )
     try:
         remember_last_comment(user_id, body)
     except Exception:
@@ -310,10 +321,13 @@ def add_comment(user_id: int, issue_key: str, body: str, *, internal: bool = Fal
     return True
 
 
-
 _ATTACH_MAGIC = {
-    "png": (b"\x89PNG",), "jpg": (b"\xff\xd8\xff",), "jpeg": (b"\xff\xd8\xff",),
-    "gif": (b"GIF8",), "webp": (b"RIFF",), "pdf": (b"%PDF",),
+    "png": (b"\x89PNG",),
+    "jpg": (b"\xff\xd8\xff",),
+    "jpeg": (b"\xff\xd8\xff",),
+    "gif": (b"GIF8",),
+    "webp": (b"RIFF",),
+    "pdf": (b"%PDF",),
 }
 _ATTACH_TEXT = {"txt", "log"}
 
@@ -321,12 +335,15 @@ _ATTACH_TEXT = {"txt", "log"}
 def validate_attachment(filename: str, content: bytes) -> str:
     """Allow-list extension, size and file signature. Returns a safe file name."""
     import os
+
     from config import JIRA_MAX_ATTACHMENT_MB
 
     name = os.path.basename((filename or "").replace("\\", "/")).strip()
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if not name or ext not in set(_ATTACH_MAGIC) | _ATTACH_TEXT:
-        raise ValueError("File type not allowed. Use png, jpg, gif, webp, pdf, txt or log.")
+        raise ValueError(
+            "File type not allowed. Use png, jpg, gif, webp, pdf, txt or log."
+        )
     if not content or len(content) > JIRA_MAX_ATTACHMENT_MB * 1024 * 1024:
         raise ValueError(f"File is empty or larger than {JIRA_MAX_ATTACHMENT_MB} MB.")
     if ext in _ATTACH_MAGIC and not content.startswith(_ATTACH_MAGIC[ext]):
@@ -336,8 +353,15 @@ def validate_attachment(filename: str, content: bytes) -> str:
     return name[:120]
 
 
-def add_attachment(user_id: int, issue_key: str, filename: str, content: bytes, content_type: str | None = None) -> None:
+def add_attachment(
+    user_id: int,
+    issue_key: str,
+    filename: str,
+    content: bytes,
+    content_type: str | None = None,
+) -> None:
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     filename = validate_attachment(filename, content)
     client = get_client_for_user(user_id)
@@ -353,6 +377,7 @@ def log_work(
     comment: str | None = None,
 ) -> str:
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     time_spent = normalize_time_spent(time_raw)
     client = get_client_for_user(user_id)
@@ -387,8 +412,11 @@ def list_transitions_friendly(
     return out
 
 
-def transition_issue(user_id: int, issue_key: str, transition_id: str, label: str = "") -> None:
+def transition_issue(
+    user_id: int, issue_key: str, transition_id: str, label: str = ""
+) -> None:
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     client = get_client_for_user(user_id)
     client.do_transition(issue_key, transition_id)
@@ -402,8 +430,17 @@ def list_project_links() -> list[dict]:
     from database import Project, ProjectJiraLink
 
     with SessionLocal() as db:
-        projects = list(db.scalars(select(Project).where(Project.is_deleted.is_(False)).order_by(Project.sort_order, Project.name)).all())
-        links = {r.project_id: r.jira_project_key for r in db.scalars(select(ProjectJiraLink)).all()}
+        projects = list(
+            db.scalars(
+                select(Project)
+                .where(Project.is_deleted.is_(False))
+                .order_by(Project.sort_order, Project.name)
+            ).all()
+        )
+        links = {
+            r.project_id: r.jira_project_key
+            for r in db.scalars(select(ProjectJiraLink)).all()
+        }
         return [
             {
                 "project_id": p.id,
@@ -420,7 +457,9 @@ def list_transition_aliases(jira_project_key: str | None = None) -> list[dict]:
     from database import JiraTransitionAlias
 
     with SessionLocal() as db:
-        stmt = select(JiraTransitionAlias).order_by(JiraTransitionAlias.sort_order, JiraTransitionAlias.raw_name)
+        stmt = select(JiraTransitionAlias).order_by(
+            JiraTransitionAlias.sort_order, JiraTransitionAlias.raw_name
+        )
         if jira_project_key:
             stmt = stmt.where(
                 (JiraTransitionAlias.jira_project_key == jira_project_key)
@@ -486,6 +525,7 @@ def remember_last_comment(user_id: int, body: str) -> None:
     """Store last posted comment text in session-friendly module cache via Streamlit session if available."""
     try:
         import streamlit as st
+
         st.session_state[f"jira_last_comment_{user_id}"] = body
     except Exception:
         log_ignored(__name__)
@@ -494,12 +534,15 @@ def remember_last_comment(user_id: int, body: str) -> None:
 def get_last_comment(user_id: int) -> str:
     try:
         import streamlit as st
+
         return st.session_state.get(f"jira_last_comment_{user_id}") or ""
     except Exception:
         return ""
 
 
-def find_similar_open_issues(user_id: int, issue: dict, *, limit: int = 5) -> list[dict]:
+def find_similar_open_issues(
+    user_id: int, issue: dict, *, limit: int = 5
+) -> list[dict]:
     """Duplicate / similar open tickets in the same project (simple text JQL)."""
     key = issue.get("key") or ""
     project_key = issue.get("project_key") or (key.split("-")[0] if key else "")
@@ -508,7 +551,10 @@ def find_similar_open_issues(user_id: int, issue: dict, *, limit: int = 5) -> li
         return []
     # Use first few significant words for ~jql
     import re as _re
-    if not _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,39}", project_key) or not _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]+-\d+", key):
+
+    if not _re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_]{1,39}", project_key
+    ) or not _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]+-\d+", key):
         return []
 
     def _lit(value: str) -> str:
@@ -566,10 +612,10 @@ def suggest_library_for_issue(user_id: int, project_id: int, issue: dict) -> lis
     ]
 
 
-
 def add_watchers(user_id: int, issue_key: str, identities: list[str]) -> list[str]:
     """Add watchers by username (Server/DC) or accountId (Cloud). Returns list of errors."""
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     client = get_client_for_user(user_id)
     errors: list[str] = []
@@ -603,6 +649,7 @@ def multi_step_transition(
     longer available mid-chain, raises JiraError after applying prior steps.
     """
     from services.rate_limit import limit_jira_write
+
     limit_jira_write(user_id)
     if not transition_ids:
         return []
@@ -622,24 +669,31 @@ def multi_step_transition(
         client.do_transition(issue_key, tid)
         lab = labels[i] if i < len(labels) else (available[tid].get("name") or tid)
         applied.append(str(lab))
-        _audit(user_id, "jira_transition", issue_key, f"step={i+1}:{lab}")
+        _audit(user_id, "jira_transition", issue_key, f"step={i + 1}:{lab}")
     return applied
 
 
-MY_QUEUE_FIELDS = (
-    "summary,status,issuetype,project,assignee,reporter,duedate,priority,updated,created"
-)
+MY_QUEUE_FIELDS = "summary,status,issuetype,project,assignee,reporter,duedate,priority,updated,created"
 MY_QUEUE_JQL = (
     "assignee = currentUser() AND resolution = Unresolved "
     "ORDER BY duedate ASC, updated DESC"
 )
+MY_QUEUE_JQL_WITH_UNASSIGNED = (
+    "(assignee = currentUser() OR assignee is EMPTY) AND resolution = Unresolved "
+    "ORDER BY duedate ASC, updated DESC"
+)
 
 
-def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
-    """Open issues assigned to the connected Jira user (all projects)."""
+def fetch_my_queue(
+    user_id: int, *, max_results: int = 100, include_unassigned: bool = False
+) -> list[dict]:
+    """Open issues assigned to the connected Jira user (all projects).
+
+    ``include_unassigned`` also returns open issues nobody owns yet.
+    """
     client = get_client_for_user(user_id)
     raw = client.search_issues(
-        MY_QUEUE_JQL,
+        MY_QUEUE_JQL_WITH_UNASSIGNED if include_unassigned else MY_QUEUE_JQL,
         max_results=max_results,
         fields=MY_QUEUE_FIELDS,
     )
@@ -650,18 +704,21 @@ def fetch_my_queue(user_id: int, *, max_results: int = 100) -> list[dict]:
         status = fields.get("status") or {}
         itype = fields.get("issuetype") or {}
         assignee = fields.get("assignee") or {}
-        out.append({
-            "key": issue.get("key") or "",
-            "summary": fields.get("summary") or "",
-            "status": status.get("name") or "",
-            "issuetype": itype.get("name") or "Unknown",
-            "project_key": project.get("key") or (issue.get("key") or "").split("-")[0],
-            "project_name": project.get("name") or project.get("key") or "",
-            "assignee": assignee.get("displayName") or assignee.get("name") or "",
-            "duedate": fields.get("duedate") or None,
-            "priority": (fields.get("priority") or {}).get("name") or "",
-            "updated": fields.get("updated") or "",
-        })
+        out.append(
+            {
+                "key": issue.get("key") or "",
+                "summary": fields.get("summary") or "",
+                "status": status.get("name") or "",
+                "issuetype": itype.get("name") or "Unknown",
+                "project_key": project.get("key")
+                or (issue.get("key") or "").split("-")[0],
+                "project_name": project.get("name") or project.get("key") or "",
+                "assignee": assignee.get("displayName") or assignee.get("name") or "",
+                "duedate": fields.get("duedate") or None,
+                "priority": (fields.get("priority") or {}).get("name") or "",
+                "updated": fields.get("updated") or "",
+            }
+        )
     return out
 
 
@@ -672,7 +729,13 @@ def aggregate_queue_dashboard(issues: list[dict]) -> dict:
 
     today = date.today()
     by_project_status: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    due_buckets = {"Overdue": 0, "Due today": 0, "Next 7 days": 0, "Later": 0, "No due date": 0}
+    due_buckets = {
+        "Overdue": 0,
+        "Due today": 0,
+        "Next 7 days": 0,
+        "Later": 0,
+        "No due date": 0,
+    }
 
     for it in issues:
         pk = it.get("project_key") or "?"
@@ -713,6 +776,7 @@ def aggregate_queue_dashboard(issues: list[dict]) -> dict:
 def group_queue_by_project_type(issues: list[dict]) -> dict[str, dict[str, list]]:
     """project_key -> issuetype -> [issues]."""
     from collections import defaultdict
+
     tree: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for it in issues:
         tree[it.get("project_key") or "?"][it.get("issuetype") or "Unknown"].append(it)

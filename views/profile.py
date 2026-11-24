@@ -8,17 +8,20 @@ Public API:
     render_profile_form(user)      -> just the profile form
     render_linked_identities(user) -> just the OAuth section
 """
+
 from __future__ import annotations
 
-from utils.errors import safe_message
+import logging
+import secrets
+import time
+
 import streamlit as st
-
-from config import APP_NAME, APP_VERSION
-
-from components.cards import page_header
 from sqlalchemy import select
 
 from auth import hash_password
+from components.cards import page_header
+from components.passkey_flow import passkey_flow
+from config import APP_NAME, APP_VERSION
 from database import (
     Project,
     SessionLocal,
@@ -27,7 +30,28 @@ from database import (
     UserProjectDesignation,
 )
 from oauth_service import OAuthError, configured, start_google, start_microsoft
+from services.avatar_service import (
+    MAX_BYTES,
+    AvatarError,
+    clear_avatar,
+    get_avatar,
+    render_avatar_image,
+    set_avatar,
+)
+from services.passkey_service import (
+    ORIGIN as PASSKEY_ORIGIN,
+)
+from services.passkey_service import (
+    WEBAUTHN_ENABLED,
+    finish_registration,
+    list_passkeys,
+    remove_passkey,
+    start_registration,
+)
+from utils.errors import safe_message
 from utils.validators import valid_password
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -42,6 +66,8 @@ PROVIDERS: tuple[tuple[str, str], ...] = (
 )
 
 SESSION_FLASH = "profile_flash"
+PASSKEY_PENDING = "profile_passkey_registration"
+PASSKEY_CHALLENGE_TTL = 300
 
 
 # --------------------------------------------------------------------------- #
@@ -81,9 +107,23 @@ def _load_identities(user_id: int) -> list[UserAuthIdentity]:
         )
 
 
+def _load_fresh_user(user_id: int) -> User | None:
+    """Re-read the user from the DB, or return None on failure."""
+    try:
+        with SessionLocal() as db:
+            return db.get(User, user_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not reload user %s", user_id)
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Persistence
 # --------------------------------------------------------------------------- #
+class ProfileValidationError(ValueError):
+    """Raised when the profile form fails client-side validation."""
+
+
 def _save_profile(
     user_id: int,
     name: str,
@@ -91,19 +131,23 @@ def _save_profile(
     new_password: str | None,
     project_values: dict[int, str],
 ) -> None:
-    """Persist the profile form. Raises ValueError on validation problems."""
+    """Persist the profile form.
+
+    Raises ``ProfileValidationError`` for user-facing validation problems
+    and lets DB errors propagate unchanged.
+    """
     clean_name = (name or "").strip()
     clean_designation = (designation or "").strip()
 
     if new_password and not valid_password(new_password):
-        raise ValueError(
+        raise ProfileValidationError(
             f"Password must contain at least {PASSWORD_MIN_LENGTH} characters."
         )
 
     with SessionLocal() as db:
         u = db.get(User, user_id)
         if u is None:
-            raise ValueError("User no longer exists.")
+            raise ProfileValidationError("User no longer exists.")
 
         if clean_name:
             u.full_name = clean_name
@@ -155,8 +199,118 @@ def _unlink_identity(user_id: int, provider: str) -> None:
             db.commit()
 
 
+def _render_passkeys(user) -> None:
+    st.subheader("Passkeys")
+    if not WEBAUTHN_ENABLED:
+        st.info("Passkey sign-in is disabled by your administrator.")
+        return
+    st.caption(
+        "Add a passkey for this account. Passkey setup requires a secure HTTPS connection."
+    )
+
+    try:
+        passkeys = list_passkeys(user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not load passkeys for user %s", user.id)
+        st.error("Could not load passkeys. Please try again.")
+        return
+
+    label = st.text_input(
+        "Passkey name",
+        value=f"Passkey {len(passkeys) + 1}",
+        max_chars=128,
+        key=f"profile_passkey_name_{user.id}",
+    )
+    if st.button("Add passkey", key=f"profile_add_passkey_{user.id}", type="primary"):
+        try:
+            registration = start_registration(
+                user.id,
+                user.username,
+                user.full_name or user.username,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not start passkey registration for user %s", user.id
+            )
+            st.error("Could not start passkey setup. Please try again.")
+        else:
+            st.session_state[PASSKEY_PENDING] = {
+                "user_id": user.id,
+                "challenge": registration["challenge"],
+                "options": registration["options"],
+                "device_name": (label or "").strip()[:128] or "Passkey",
+                "expires_at": time.time() + PASSKEY_CHALLENGE_TTL,
+                "request_id": secrets.token_urlsafe(12),
+            }
+
+    pending = st.session_state.get(PASSKEY_PENDING)
+    if pending and pending.get("user_id") != user.id:
+        st.session_state.pop(PASSKEY_PENDING, None)
+        pending = None
+    if pending and pending.get("expires_at", 0) <= time.time():
+        st.session_state.pop(PASSKEY_PENDING, None)
+        st.info("Passkey setup expired. Select Add passkey to try again.")
+        pending = None
+    if pending:
+        result = passkey_flow(
+            mode="registration",
+            options=pending["options"],
+            expected_origin=PASSKEY_ORIGIN,
+            key=f"profile_passkey_registration_{pending['request_id']}",
+        )
+        if result is not None:
+            pending = st.session_state.pop(PASSKEY_PENDING, None)
+            if not isinstance(result, dict) or pending is None:
+                st.error("Passkey setup could not be completed. Please try again.")
+            else:
+                try:
+                    saved = finish_registration(
+                        user.id,
+                        result,
+                        pending["challenge"],
+                        pending["device_name"],
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Could not save passkey for user %s", user.id)
+                    st.error("Could not save the passkey. Please try again.")
+                else:
+                    if saved:
+                        _set_flash("Passkey added.")
+                        st.rerun()
+                    else:
+                        st.error("Passkey verification failed. Please try again.")
+
+    if not passkeys:
+        st.info("No passkeys are registered for this account.")
+    for passkey in passkeys:
+        info, action = st.columns([4, 1], vertical_alignment="center")
+        info.write(passkey["name"])
+        if passkey["created_at"]:
+            info.caption(f"Added {passkey['created_at']:%Y-%m-%d}")
+        if action.button(
+            "Remove",
+            key=f"profile_remove_passkey_{passkey['id']}",
+            width="stretch",
+        ):
+            try:
+                removed = remove_passkey(user.id, passkey["id"])
+            except ValueError as exc:
+                st.warning(safe_message(exc))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Could not remove passkey %s for user %s", passkey["id"], user.id
+                )
+                st.error("Could not remove the passkey. Please try again.")
+            else:
+                if removed:
+                    _set_flash("Passkey removed.")
+                    st.rerun()
+                else:
+                    st.error("Passkey not found. Refresh the page and try again.")
+
+
 # --------------------------------------------------------------------------- #
-# Flash helper
+# Flash helpers
 # --------------------------------------------------------------------------- #
 def _render_flash() -> None:
     flash = st.session_state.pop(SESSION_FLASH, None)
@@ -169,33 +323,19 @@ def _set_flash(message: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Profile form
+# Avatar section
 # --------------------------------------------------------------------------- #
-def render_profile_form(user) -> None:
-    import streamlit as st
-    from services.avatar_service import (
-        set_avatar, clear_avatar, render_avatar_image, get_avatar, AvatarError, MAX_BYTES,
-    )
-    from database import SessionLocal, User as _User
-
-    # Always re-read avatar from DB (session user object can be stale)
-    fresh = None
-    try:
-        with SessionLocal() as db:
-            fresh = db.get(_User, user.id)
-    except Exception:
-        fresh = user
-    display_user = fresh or user
+def _render_avatar_section(user) -> None:
+    display_user = _load_fresh_user(user.id) or user
 
     st.subheader("Profile photo")
-    st.caption(f"PNG, JPEG or WebP · max {MAX_BYTES // 1024} KB · stored securely in the database")
+    st.caption(
+        f"PNG, JPEG or WebP · max {MAX_BYTES // 1024} KB · stored securely in the database"
+    )
     c_av1, c_av2 = st.columns([1, 3])
     with c_av1:
         render_avatar_image(display_user, width=96)
-        if get_avatar(user.id):
-            st.caption("Photo on file")
-        else:
-            st.caption("No photo yet")
+        st.caption("Photo on file" if get_avatar(user.id) else "No photo yet")
     with c_av2:
         up = st.file_uploader(
             "Choose image",
@@ -205,37 +345,65 @@ def render_profile_form(user) -> None:
         )
         b1, b2 = st.columns(2)
         if b1.button("Save photo", type="primary", key=f"avatar_save_{user.id}"):
-            if not up:
-                st.warning("Choose an image first.")
-            else:
-                try:
-                    raw = up.getvalue()
-                    mime = (up.type or "").strip() or "image/png"
-                    if up.name and up.name.lower().endswith(".jpg"):
-                        mime = mime or "image/jpeg"
-                    set_avatar(
-                        user.id, raw, mime,
-                        actor_id=user.id, actor_role=getattr(user, "role", None),
-                    )
-                    st.session_state[SESSION_FLASH] = "Profile photo updated."
-                    st.rerun()
-                except AvatarError as exc:
-                    st.error(safe_message(exc))
-                except Exception as exc:
-                    # Surface DB/schema errors so ops can migrate
-                    st.error(f"Could not save photo: {safe_message(exc)}")
+            _handle_avatar_upload(up, user)
         if b2.button("Remove photo", key=f"avatar_clr_{user.id}"):
-            try:
-                clear_avatar(
-                    user.id,
-                    actor_id=user.id, actor_role=getattr(user, "role", None),
-                )
-                st.session_state[SESSION_FLASH] = "Profile photo removed."
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not remove photo: {safe_message(exc)}")
+            _handle_avatar_remove(user)
+
+
+def _handle_avatar_upload(up, user) -> None:
+    if not up:
+        st.warning("Choose an image first.")
+        return
+    try:
+        raw = up.getvalue()
+        mime = (up.type or "").strip() or "image/png"
+        if (
+            up.name
+            and up.name.lower().endswith((".jpg", ".jpeg"))
+            and mime == "image/png"
+        ):
+            mime = "image/jpeg"
+        set_avatar(
+            user.id,
+            raw,
+            mime,
+            actor_id=user.id,
+            actor_role=getattr(user, "role", None),
+        )
+    except AvatarError as exc:
+        st.error(safe_message(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Avatar save failed for user %s", user.id)
+        st.error(f"Could not save photo: {safe_message(exc)}")
+    else:
+        _set_flash("Profile photo updated.")
+        st.rerun()
+
+
+def _handle_avatar_remove(user) -> None:
+    try:
+        clear_avatar(
+            user.id,
+            actor_id=user.id,
+            actor_role=getattr(user, "role", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Avatar remove failed for user %s", user.id)
+        st.error(f"Could not remove photo: {safe_message(exc)}")
+    else:
+        _set_flash("Profile photo removed.")
+        st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Profile form
+# --------------------------------------------------------------------------- #
+def render_profile_form(user) -> None:
+    _render_avatar_section(user)
     st.divider()
 
+    # Use the freshest copy of the user for form defaults.
+    current_user = _load_fresh_user(user.id) or user
     projects, overrides = _load_projects_and_overrides(user.id)
 
     with st.form("profile_form", clear_on_submit=False):
@@ -244,12 +412,12 @@ def render_profile_form(user) -> None:
         col_name, col_desig = st.columns(2)
         name = col_name.text_input(
             "Full name",
-            value=user.full_name or "",
+            value=current_user.full_name or "",
             key="profile_full_name",
         )
         designation = col_desig.text_input(
             "Default designation",
-            value=user.designation or "",
+            value=current_user.designation or "",
             key="profile_designation",
             placeholder=DEFAULT_DESIGNATION,
         )
@@ -265,9 +433,7 @@ def render_profile_form(user) -> None:
         )
 
         st.subheader("Project-specific designations")
-        st.caption(
-            "Leave a field blank to fall back to your default designation."
-        )
+        st.caption("Leave a field blank to fall back to your default designation.")
 
         project_values: dict[int, str] = {}
         if not projects:
@@ -275,9 +441,7 @@ def render_profile_form(user) -> None:
         else:
             for project in projects:
                 current = (
-                    overrides[project.id].designation
-                    if project.id in overrides
-                    else ""
+                    overrides[project.id].designation if project.id in overrides else ""
                 )
                 project_values[project.id] = st.text_input(
                     project.name,
@@ -295,34 +459,29 @@ def render_profile_form(user) -> None:
 
     try:
         _save_profile(user.id, name, designation, new_password, project_values)
-    except ValueError:
-        logger = __import__("logging").getLogger(__name__)
-        logger.exception("Profile validation failed for user %s", user.id)
-        st.error("Please review the profile details and try again.")
-        return
+    except ProfileValidationError as exc:
+        logger.warning("Profile validation failed for user %s: %s", user.id, exc)
+        st.error(safe_message(exc))
     except Exception:  # noqa: BLE001
-        logger = __import__("logging").getLogger(__name__)
         logger.exception("Profile save failed for user %s", user.id)
         st.error("Could not save profile. Please try again.")
-        return
-
-    # One-shot success message that survives the rerun.
-    _set_flash("Profile updated.")
-    st.rerun()
+    else:
+        _set_flash("Profile updated.")
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
 # Linked identities
 # --------------------------------------------------------------------------- #
 def _link_url(provider: str, user, state) -> str | None:
-    """Return the OAuth start URL, or None if not configured."""
+    """Return the OAuth start URL, or None if the provider is not configured."""
     if not configured(provider):
         return None
     if provider == "microsoft":
         return start_microsoft(state, user.id)
     if provider == "google":
         return start_google(state, user.id)
-    return None
+    raise ValueError(f"Unsupported OAuth provider: {provider!r}")
 
 
 def _render_linked_identity(
@@ -351,8 +510,9 @@ def _render_linked_identity(
             try:
                 _unlink_identity(user.id, provider)
             except Exception:  # noqa: BLE001
-                logger = __import__("logging").getLogger(__name__)
-                logger.exception("Could not unlink provider %s for user %s", provider, user.id)
+                logger.exception(
+                    "Could not unlink provider %s for user %s", provider, user.id
+                )
                 st.error("Could not unlink sign-in method. Please try again.")
             else:
                 _set_flash(f"{label} unlinked.")
@@ -380,14 +540,12 @@ def _render_linked_identity(
 
 def render_linked_identities(user) -> None:
     st.subheader("Linked sign-in methods")
-    st.caption(
-        "Sign in with any linked provider, or use your password if one is set."
-    )
+    st.caption("Sign in with any linked provider, or use your password if one is set.")
+    _render_passkeys(user)
 
     try:
         identities = _load_identities(user.id)
     except Exception:  # noqa: BLE001
-        logger = __import__("logging").getLogger(__name__)
         logger.exception("Could not load sign-in methods for user %s", user.id)
         st.error("Could not load sign-in methods. Please try again.")
         return

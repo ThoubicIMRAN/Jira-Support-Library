@@ -1,4 +1,5 @@
 """Project visibility: superadmin/admin see all; user/manager see assigned only."""
+
 from __future__ import annotations
 
 from sqlalchemy import select

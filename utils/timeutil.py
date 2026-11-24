@@ -1,4 +1,5 @@
 """Timezone helpers: SQLite returns naive datetimes, PostgreSQL aware ones."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

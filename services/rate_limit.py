@@ -3,6 +3,7 @@
 Uses a sliding window in memory (per worker). For multi-replica deploys,
 prefer Redis later; this still stops casual brute-force on a single instance.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,7 +17,12 @@ _buckets: dict[str, Deque[float]] = defaultdict(deque)
 
 
 class RateLimitExceeded(ValueError):
-    def __init__(self, message: str = "Too many attempts. Try again later.", *, retry_after: int = 60):
+    def __init__(
+        self,
+        message: str = "Too many attempts. Try again later.",
+        *,
+        retry_after: int = 60,
+    ):
         super().__init__(message)
         self.retry_after = retry_after
 
@@ -82,7 +88,9 @@ def limit_login(identity: str, client_ip: str = "") -> None:
 
 
 def limit_signup(client_ip: str = "") -> None:
-    check_rate_limit(f"signup:ip:{client_ip or 'unknown'}", max_calls=5, window_seconds=3600)
+    check_rate_limit(
+        f"signup:ip:{client_ip or 'unknown'}", max_calls=5, window_seconds=3600
+    )
 
 
 def limit_password_reset(email_or_ip: str) -> None:

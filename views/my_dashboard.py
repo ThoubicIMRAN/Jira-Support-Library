@@ -1,4 +1,5 @@
 """My Dashboard — assignee queue + charts (all projects) + SLA badges."""
+
 from __future__ import annotations
 
 import logging
@@ -6,15 +7,16 @@ import re
 from collections import Counter
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from components.cards import page_header
 from config import JIRA_BASE_URL
 from services import jira_service
 from services.jira_service import JiraError
-from services.rate_limit import limit_sensitive_api, RateLimitExceeded
-from services.sla_utils import issue_badges, badge_label
-from utils.errors import safe_message, log_ignored
+from services.rate_limit import RateLimitExceeded, limit_sensitive_api
+from services.sla_utils import badge_label, issue_badges
+from utils.errors import log_ignored, safe_message
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +63,48 @@ def _jira_url(key: str) -> str | None:
     return f"{JIRA_BASE_URL.rstrip('/')}/browse/{key}"
 
 
-def _load_queue(user, max_n: int) -> list[dict]:
+def urgency_score(issue: dict) -> int:
+    """Higher = more urgent. Used as primary sort key."""
+    score = 0
+    if _has_badge(issue, "overdue"):
+        score += 100
+    if _has_badge(issue, "due_soon"):
+        score += 50
+    if _has_badge(issue, "blocked"):
+        score += 25
+    if _has_badge(issue, "stale"):
+        score += 10
+    return score
+
+
+def _load_queue(user, max_n: int, include_unassigned: bool = False) -> list[dict]:
     try:
         limit_sensitive_api(user.id, "my_queue")
         with st.spinner("Loading your Jira queue…"):
+            if include_unassigned:
+                return (
+                    jira_service.fetch_my_queue(
+                        user.id,
+                        max_results=int(max_n),
+                        include_unassigned=True,
+                    )
+                    or []
+                )
             return jira_service.fetch_my_queue(user.id, max_results=int(max_n)) or []
     except RateLimitExceeded as exc:
         st.warning(safe_message(exc))
     except JiraError as exc:
         st.error(safe_message(exc))
+    except TypeError:
+        # include_unassigned not supported by the service — degrade gracefully
+        st.warning(
+            "Backend does not support `include_unassigned` yet; "
+            "showing assigned issues only."
+        )
+        try:
+            return jira_service.fetch_my_queue(user.id, max_results=int(max_n)) or []
+        except Exception:
+            logger.exception("My queue load failed (fallback)")
     except Exception:
         logger.exception("My queue load failed")
         st.error("Could not load your queue. Check Jira connection in Settings.")
@@ -81,7 +116,14 @@ def _enrich(issues: list[dict]) -> list[dict]:
     out = []
     for it in issues:
         badges = issue_badges(it) or []
-        out.append({**it, "_badges": badges, "_labels": [badge_label(b) for b in badges]})
+        out.append(
+            {
+                **it,
+                "_badges": badges,
+                "_labels": [badge_label(b) for b in badges],
+                "_urgency": urgency_score(it),
+            }
+        )
     return out
 
 
@@ -97,27 +139,36 @@ def render(user) -> None:
     )
 
     # ---- controls ----
-    c1, c2, c3 = st.columns([1, 1, 3])
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
     refresh = c1.button("🔄 Refresh", key=f"mq_refresh_{user.id}")
     max_n = c2.slider("Max issues", 20, 200, 100, 10, key=f"mq_max_{user.id}")
+    show_unassigned = c3.checkbox(
+        "Include Unassigned",
+        value=False,
+        key=f"mq_unassigned_{user.id}",
+    )
+
     pending = st.session_state.get("mq_prefill_queue") or []
     if pending:
-        c3.success(
-            f"🎫 **{len(pending)}** ticket(s) queued — last: `{_safe_text(pending[-1], 20)}`"
+        c4.success(
+            f"🎫 **{len(pending)}** ticket(s) queued — last: "
+            f"`{_safe_text(pending[-1], 20)}`"
         )
-        if c3.button("Clear queue", key=f"mq_clear_q_{user.id}"):
+        if c4.button("Clear queue", key=f"mq_clear_q_{user.id}"):
             st.session_state["mq_prefill_queue"] = []
             st.rerun()
     else:
-        c3.caption("No tickets queued for the next Jira action.")
+        c4.caption("No tickets queued for the next Jira action.")
 
-    cache_key = f"my_queue_{user.id}_{max_n}"
+    cache_key = f"my_queue_{user.id}_{max_n}_{show_unassigned}"
     if refresh or cache_key not in st.session_state:
         # prune older queue caches for this user
         for k in list(st.session_state.keys()):
             if k.startswith(f"my_queue_{user.id}_") and k != cache_key:
                 del st.session_state[k]
-        st.session_state[cache_key] = _load_queue(user, max_n)
+        st.session_state[cache_key] = _load_queue(
+            user, max_n, include_unassigned=show_unassigned
+        )
 
     issues = _enrich(st.session_state.get(cache_key) or [])
 
@@ -138,26 +189,56 @@ def render(user) -> None:
     n_stale = sum(1 for it in issues if _has_badge(it, "stale"))
     n_due_soon = sum(1 for it in issues if _has_badge(it, "due_soon"))
     n_blocked = sum(1 for it in issues if _has_badge(it, "blocked"))
+    n_unassigned = sum(1 for it in issues if not it.get("assignee"))
+    n_assigned = len(issues) - n_unassigned
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Open assigned", dash.get("total") or len(issues))
-    m2.metric("🔴 Overdue", n_overdue)
-    m3.metric("🟠 Due soon", n_due_soon)
-    m4.metric(f"🟡 Stale ({_STALE_DAYS}d+)", n_stale)
-    m5.metric("⛔ Blocked", n_blocked)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Assigned", n_assigned)
+    m2.metric("Unassigned", n_unassigned)
+    m3.metric("🔴 Overdue", n_overdue)
+    m4.metric("🟠 Due soon", n_due_soon)
+    m5.metric(f"🟡 Stale ({_STALE_DAYS}d+)", n_stale)
+    m6.metric("⛔ Blocked", n_blocked)
 
     with st.expander("Badge legend", expanded=False):
-        for k, v in _SLA_BADGE_LEGEND.items():
-            st.caption(f"{v}")
+        for _k, v in _SLA_BADGE_LEGEND.items():
+            st.caption(v)
 
-    tab_charts, tab_queue, tab_aging = st.tabs(
-        ["📈 Charts", "🎯 My Queue", "⏳ Aging"]
+    tab_charts, tab_queue, tab_unassigned, tab_aging = st.tabs(
+        ["📈 Charts", "🎯 My Queue", "📭 Unassigned", "⏳ Aging"]
     )
 
     # ==================================================================
     # Charts
     # ==================================================================
     with tab_charts:
+        # ---- SLA donut ----
+        st.subheader("SLA Health")
+        healthy = max(len(issues) - n_overdue - n_due_soon, 0)
+        sla_df = pd.DataFrame(
+            {
+                "Status": ["Overdue", "Due Soon", "Healthy"],
+                "Count": [n_overdue, n_due_soon, healthy],
+            }
+        )
+        if sla_df["Count"].sum() > 0:
+            fig = px.pie(
+                sla_df,
+                names="Status",
+                values="Count",
+                hole=0.6,
+                color="Status",
+                color_discrete_map={
+                    "Overdue": "red",
+                    "Due Soon": "orange",
+                    "Healthy": "green",
+                },
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No SLA data.")
+
+        # ---- Project / status treemap ----
         flat = dash.get("flat_project_status") or []
         st.subheader("Issues by project & status")
         if flat and {"project", "status", "count"}.issubset(flat[0].keys()):
@@ -181,12 +262,25 @@ def render(user) -> None:
             )
             chart_kind = st.radio(
                 "Chart type",
-                ["Stacked bar", "Grouped bar", "Heatmap (table)"],
+                ["Treemap", "Stacked bar", "Grouped bar", "Heatmap (table)"],
                 horizontal=True,
                 key=f"mq_chart_kind_{user.id}",
             )
             if chart_kind == "Heatmap (table)":
                 st.dataframe(pivot, width="stretch")
+            elif chart_kind == "Treemap":
+                tmp = plot_df.copy()
+                if not tmp.empty and (tmp["count"] > 0).any():
+                    tmp["count"] = tmp["count"].astype(float).clip(lower=0.0)
+                    fig = px.treemap(
+                        tmp,
+                        path=["project", "status"],
+                        values="count",
+                        color="count",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.caption("No nonzero data to plot.")
             else:
                 st.bar_chart(pivot, stack=chart_kind == "Stacked bar")
             with st.expander("Raw table"):
@@ -205,7 +299,10 @@ def render(user) -> None:
         status_counts = Counter(it.get("status") or "—" for it in issues)
         if status_counts:
             sdf = pd.DataFrame(
-                {"status": list(status_counts.keys()), "count": list(status_counts.values())}
+                {
+                    "status": list(status_counts.keys()),
+                    "count": list(status_counts.values()),
+                }
             ).set_index("status")
             st.bar_chart(sdf)
         else:
@@ -236,11 +333,12 @@ def render(user) -> None:
     # Queue
     # ==================================================================
     with tab_queue:
-        # ---- filters ----
         f1, f2, f3, f4 = st.columns(4)
         statuses = sorted({it.get("status") or "—" for it in issues})
         types = sorted({it.get("type") or "—" for it in issues})
-        projects = sorted({(it.get("key") or "").split("-", 1)[0] for it in issues if it.get("key")})
+        projects = sorted(
+            {(it.get("key") or "").split("-", 1)[0] for it in issues if it.get("key")}
+        )
 
         pick_status = f1.multiselect("Status", statuses, key=f"mq_fs_{user.id}")
         pick_type = f2.multiselect("Type", types, key=f"mq_ft_{user.id}")
@@ -252,7 +350,7 @@ def render(user) -> None:
                 return False
             if pick_type and (it.get("type") or "—") not in pick_type:
                 return False
-            if pick_proj and (it.get("key") or "").split("-", 1)[0] not in pick_proj:
+            if pick_proj and ((it.get("key") or "").split("-", 1)[0] not in pick_proj):
                 return False
             if only_overdue and not (
                 _has_badge(it, "overdue") or _has_badge(it, "due_soon")
@@ -262,20 +360,44 @@ def render(user) -> None:
 
         filtered = [it for it in issues if _keep(it)]
 
-        # ---- sort ----
+        # ---- sort: urgency first, user-selected as tiebreaker ----
         sort_key = st.radio(
             "Sort by",
-            ["Due date", "Priority", "Status", "Key"],
+            ["Urgency", "Due date", "Priority", "Status", "Key"],
             horizontal=True,
             key=f"mq_sort_{user.id}",
         )
-        prio_rank = {"Highest": 0, "High": 1, "Medium": 2, "Low": 3, "Lowest": 4, "Unset": 5}
-        if sort_key == "Due date":
-            filtered.sort(key=lambda it: it.get("duedate") or "9999-99-99")
+        prio_rank = {
+            "Highest": 0,
+            "High": 1,
+            "Medium": 2,
+            "Low": 3,
+            "Lowest": 4,
+            "Unset": 5,
+        }
+        if sort_key == "Urgency":
+            filtered.sort(key=lambda it: (-it.get("_urgency", 0), it.get("key") or ""))
+        elif sort_key == "Due date":
+            filtered.sort(
+                key=lambda it: (
+                    -it.get("_urgency", 0),
+                    it.get("duedate") or "9999-99-99",
+                )
+            )
         elif sort_key == "Priority":
-            filtered.sort(key=lambda it: prio_rank.get(it.get("priority") or "Unset", 9))
+            filtered.sort(
+                key=lambda it: (
+                    -it.get("_urgency", 0),
+                    prio_rank.get(it.get("priority") or "Unset", 9),
+                )
+            )
         elif sort_key == "Status":
-            filtered.sort(key=lambda it: (it.get("status") or "").lower())
+            filtered.sort(
+                key=lambda it: (
+                    -it.get("_urgency", 0),
+                    (it.get("status") or "").lower(),
+                )
+            )
         elif sort_key == "Key":
             filtered.sort(key=lambda it: it.get("key") or "")
 
@@ -303,7 +425,10 @@ def render(user) -> None:
         for project_key in sorted(tree.keys()):
             types_map = tree[project_key]
             n_proj = sum(len(v) for v in types_map.values())
-            with st.expander(f"**{_safe_text(project_key, 24)}** ({n_proj})", expanded=n_proj <= 8):
+            with st.expander(
+                f"**{_safe_text(project_key, 24)}** ({n_proj})",
+                expanded=n_proj <= 8,
+            ):
                 for itype in sorted(types_map.keys()):
                     rows = types_map[itype]
                     st.markdown(f"**{_safe_text(itype, 40)}** · {len(rows)}")
@@ -352,10 +477,42 @@ def render(user) -> None:
                 st.markdown("---")
 
     # ==================================================================
+    # Unassigned
+    # ==================================================================
+    with tab_unassigned:
+        unassigned = [i for i in issues if not i.get("assignee")]
+        if not unassigned:
+            st.info("No unassigned tickets.")
+        else:
+            df = pd.DataFrame(
+                [
+                    {
+                        "Key": i.get("key"),
+                        "Summary": _safe_text(i.get("summary") or ""),
+                        "Project": i.get("project")
+                        or (i.get("key") or "").split("-", 1)[0],
+                        "Status": i.get("status"),
+                        "Priority": i.get("priority"),
+                        "Due": i.get("duedate"),
+                    }
+                    for i in unassigned
+                ]
+            )
+            st.dataframe(df, width="stretch", hide_index=True)
+            st.download_button(
+                "⬇️ Download unassigned CSV",
+                data=df.to_csv(index=False).encode(),
+                file_name="my_queue_unassigned.csv",
+                mime="text/csv",
+                key=f"mq_dl_unassigned_{user.id}",
+            )
+
+    # ==================================================================
     # Aging
     # ==================================================================
     with tab_aging:
         st.subheader("Time since last update")
+
         def _days_since(it: dict) -> int | None:
             for k in ("updated", "updated_at", "last_updated"):
                 v = it.get(k)
@@ -387,7 +544,11 @@ def render(user) -> None:
             else:
                 buckets["30d+"] += 1
             rows.append(
-                {"key": it.get("key"), "days_since_update": d, "status": it.get("status")}
+                {
+                    "key": it.get("key"),
+                    "days_since_update": d,
+                    "status": it.get("status"),
+                }
             )
 
         if rows:
@@ -396,6 +557,10 @@ def render(user) -> None:
                 adf.sort_values("days_since_update", ascending=False),
                 width="stretch",
             )
-            st.bar_chart(pd.DataFrame({"bucket": list(buckets), "count": list(buckets.values())}).set_index("bucket"))
+            st.bar_chart(
+                pd.DataFrame(
+                    {"bucket": list(buckets), "count": list(buckets.values())}
+                ).set_index("bucket")
+            )
         else:
             st.caption("No update timestamps available on your Jira payload.")

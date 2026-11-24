@@ -22,7 +22,10 @@ def is_locked(identity: str) -> bool:
     with SessionLocal() as db:
         rows = db.scalars(
             select(LoginAttempt)
-            .where(LoginAttempt.identity == identity.lower(), LoginAttempt.attempted_at >= cutoff)
+            .where(
+                LoginAttempt.identity == identity.lower(),
+                LoginAttempt.attempted_at >= cutoff,
+            )
             .order_by(LoginAttempt.attempted_at.desc())
         ).all()
         failures = 0
@@ -47,12 +50,20 @@ def email_allowed(email: str) -> bool:
 
 
 def tenant_allowed(tenant_id: str | None) -> bool:
-    return not MS_ALLOWED_TENANT_IDS or (tenant_id or "").lower() in MS_ALLOWED_TENANT_IDS
+    return (
+        not MS_ALLOWED_TENANT_IDS or (tenant_id or "").lower() in MS_ALLOWED_TENANT_IDS
+    )
 
 
 def mapped_ms_role(claim_roles):
     raw = MS_APP_ROLE_MAP or {}
-    mapping = dict(raw) if isinstance(raw, dict) else json.loads(raw or "{}") if isinstance(raw, str) else {}
+    mapping = (
+        dict(raw)
+        if isinstance(raw, dict)
+        else json.loads(raw or "{}")
+        if isinstance(raw, str)
+        else {}
+    )
     rank = {"user": 0, "manager": 1, "admin": 2, "superadmin": 3}
     result = "user"
     for claim in claim_roles or []:
@@ -60,4 +71,3 @@ def mapped_ms_role(claim_roles):
         if rank.get(candidate, 0) > rank[result]:
             result = candidate
     return result
-

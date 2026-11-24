@@ -9,6 +9,7 @@ the keyed Streamlit container (``st.container(key=...)`` adds the class
 ``st-key-<key>``), which lets icon tiles, badges and buttons pick up the
 project colour exactly like the prototype's ``.p0 … .pN`` themes.
 """
+
 from __future__ import annotations
 
 import html
@@ -37,15 +38,32 @@ def _e(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def initials(name: Any) -> str:
+    """Up to two capital letters for avatar / tile fallbacks ("Jira Support" -> "JS")."""
+    parts = [p for p in re.split(r"[\s._@-]+", str(name or "")) if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    return (parts[0][:2] if parts else "?").upper()
+
+
+def format_card_index(index: int) -> str:
+    """Format a card index consistently with the project prototype."""
+    return f"{int(index):02d}"
+
+
 def accent_scope(container_key: str, color: Any) -> str:
     """Return a <style> block that sets ``--pc`` for one keyed container."""
-    return f"<style>.st-key-{safe_key(container_key)}{{--pc:{safe_color(color)};}}</style>"
+    return (
+        f"<style>.st-key-{safe_key(container_key)}{{--pc:{safe_color(color)};}}</style>"
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Page chrome
 # --------------------------------------------------------------------------- #
-def page_header(title: str, subtitle: str | None = None, icon: str | None = None) -> None:
+def page_header(
+    title: str, subtitle: str | None = None, icon: str | None = None
+) -> None:
     """Standard page title (Syne display face) with optional subtitle."""
     icon_html = f'<span class="jsl-page-icon">{_e(icon)}</span>' if icon else ""
     sub_html = f'<p class="jsl-page-sub">{_e(subtitle)}</p>' if subtitle else ""
@@ -79,9 +97,13 @@ def hero_banner(
     )
 
 
-def section_header(title: str, count: int | None = None, color: str | None = None) -> None:
+def section_header(
+    title: str, count: int | None = None, color: str | None = None
+) -> None:
     """Category heading with accent bar and count pill."""
-    count_html = f'<span class="jsl-sec-count">{int(count)}</span>' if count is not None else ""
+    count_html = (
+        f'<span class="jsl-sec-count">{int(count)}</span>' if count is not None else ""
+    )
     bar = f' style="background:{safe_color(color)}"' if color else ""
     st.markdown(
         f'<div class="jsl-sec-head"><span class="jsl-sec-bar"{bar}></span>'
@@ -90,11 +112,12 @@ def section_header(title: str, count: int | None = None, color: str | None = Non
     )
 
 
-def empty_state(icon: str, title: str, hint: str | None = None) -> None:
+def empty_state(icon: str | None, title: str, hint: str | None = None) -> None:
+    """Dashed placeholder. Pass ``icon=None`` for a text-only state."""
     hint_html = f"<p>{_e(hint)}</p>" if hint else ""
+    icon_html = f'<div class="jsl-empty-icon">{_e(icon)}</div>' if icon else ""
     st.markdown(
-        f'<div class="jsl-empty"><div class="jsl-empty-icon">{_e(icon)}</div>'
-        f"<h3>{_e(title)}</h3>{hint_html}</div>",
+        f'<div class="jsl-empty">{icon_html}<h3>{_e(title)}</h3>{hint_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -104,50 +127,75 @@ def empty_state(icon: str, title: str, hint: str | None = None) -> None:
 # --------------------------------------------------------------------------- #
 def project_card(
     project: Any,
-    category_count: int,
-    response_count: int,
     *,
     pinned: bool = False,
-) -> tuple[bool, bool]:
-    """Render one project tile and return ``(open_clicked, pin_clicked)``.
-
-    The whole tile is one keyed container so CSS can draw the card shell, the
-    tinted icon, the footer band and the coloured "Open" button as one unit.
-    """
+    can_manage: bool = False,
+    key_prefix: str,
+) -> tuple[bool, bool, bool, bool]:
+    """Render one project card and return open, pin, edit, and archive clicks."""
     pid = int(project.id)
-    key = f"pcard_{pid}"
+    prefix = safe_key(key_prefix)
+    key = f"pcard_{prefix}_{pid}"
     with st.container(key=key):
         st.markdown(
-            accent_scope(key, getattr(project, "color", None))
-            + '<div class="jsl-proj-top">'
-            f'<div class="jsl-proj-icon">{_e(getattr(project, "icon", None) or "📁")}</div>'
+            accent_scope(key, getattr(project, "color", None)),
+            unsafe_allow_html=True,
+        )
+        top_left, top_right = st.columns([5, 1], vertical_alignment="center")
+        project_key = getattr(project, "key", None) or ""
+        top_left.markdown(
+            f'<span class="jsl-proj-key">{_e(project_key)}</span>',
+            unsafe_allow_html=True,
+        )
+        pin_clicked = top_right.button(
+            "",
+            icon=":material/star:" if pinned else ":material/star_border:",
+            key=f"pin_{prefix}_{pid}",
+            help="Unpin project" if pinned else "Pin project to the top",
+            width="stretch",
+        )
+        st.markdown(
+            '<div class="jsl-proj-body">'
             f'<div class="jsl-proj-name">{_e(project.name)}</div>'
             f'<div class="jsl-proj-desc">{_e(getattr(project, "description", ""))}</div>'
             "</div>",
             unsafe_allow_html=True,
         )
-        with st.container(key=f"pfoot_{pid}"):
-            stats_col, open_col, pin_col = st.columns([3, 3.2, 1.2], vertical_alignment="center", gap="small")
-            stats_col.markdown(
-                '<div class="jsl-proj-stats">'
-                f'<div class="jsl-proj-stat"><span class="jsl-proj-stat-num">{int(response_count)}</span>'
-                '<span class="jsl-proj-stat-label">Responses</span></div>'
-                '<span class="jsl-proj-stat-divider"></span>'
-                f'<div class="jsl-proj-stat"><span class="jsl-proj-stat-num">{int(category_count)}</span>'
-                '<span class="jsl-proj-stat-label">Categories</span></div>'
-                "</div>",
-                unsafe_allow_html=True,
+        with st.container(key=f"pfoot_{prefix}_{pid}"):
+            open_col, menu_col = st.columns(
+                [4, 1], vertical_alignment="center", gap="small"
             )
             opened = open_col.button(
-                "Open library →", key=f"open_{pid}", type="primary", width="stretch"
-            )
-            pin_clicked = pin_col.button(
-                "📌" if pinned else "＋",
-                key=f"pin_{pid}",
-                help="Unpin project" if pinned else "Pin project to the top",
+                "Open library",
+                key=f"open_{prefix}_{pid}",
+                type="primary",
                 width="stretch",
+                icon=":material/arrow_forward:",
+                icon_position="right",
             )
-    return opened, pin_clicked
+            edit_clicked = False
+            archive_clicked = False
+            if can_manage:
+                with menu_col.popover(
+                    "",
+                    icon=":material/more_vert:",
+                    key=f"menu_{prefix}_{pid}",
+                    help="Project actions",
+                ):
+                    edit_clicked = st.button(
+                        "Edit project",
+                        icon=":material/edit:",
+                        key=f"edit_{prefix}_{pid}",
+                        width="stretch",
+                    )
+                    archive_clicked = st.button(
+                        "Archive project",
+                        icon=":material/archive:",
+                        key=f"archive_{prefix}_{pid}",
+                        width="stretch",
+                        type="tertiary",
+                    )
+    return opened, pin_clicked, edit_clicked, archive_clicked
 
 
 # --------------------------------------------------------------------------- #
@@ -166,8 +214,7 @@ def response_card_header(
     badge_html = f'<span class="jsl-card-badge">{_e(badge)}</span>' if badge else ""
     sub_html = f'<div class="jsl-card-sub">{_e(subtitle)}</div>' if subtitle else ""
     st.markdown(
-        accent_scope(container_key, color)
-        + '<div class="jsl-card-top">'
+        accent_scope(container_key, color) + '<div class="jsl-card-top">'
         f'<span class="jsl-card-num">{int(index)}</span>'
         f'<div class="jsl-card-titlebox"><div class="jsl-card-title">{_e(title)}</div>{sub_html}</div>'
         f"{badge_html}</div>",
@@ -177,4 +224,6 @@ def response_card_header(
 
 def preview_text(text: str | None) -> None:
     if text:
-        st.markdown(f'<div class="jsl-card-preview">{_e(text)}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="jsl-card-preview">{_e(text)}</div>', unsafe_allow_html=True
+        )

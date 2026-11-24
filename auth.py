@@ -6,22 +6,47 @@ from datetime import datetime, timezone
 
 import bcrypt
 from sqlalchemy import select
-from database import SessionLocal, User, AuditLog
-from services.security_policy import is_locked, record_attempt
-from services.rate_limit import limit_login, RateLimitExceeded
+
 from config import ALLOW_DEFAULT_BOOTSTRAP_ADMIN, APP_ENV, BOOTSTRAP_ADMIN_USERNAME
+from database import AuditLog, SessionLocal, User
+from services.rate_limit import RateLimitExceeded, limit_login
+from services.security_policy import is_locked, record_attempt
 
 logger = logging.getLogger(__name__)
 
 PERMISSIONS = {
     "user": {"view", "copy", "export", "use_ai"},
     "manager": {
-        "view", "copy", "export", "use_ai", "create", "edit", "duplicate",
-        "save_library", "approve_content",
+        "view",
+        "copy",
+        "export",
+        "use_ai",
+        "create",
+        "edit",
+        "duplicate",
+        "save_library",
+        "approve_content",
     },
     "admin": {
-        "view", "copy", "export", "use_ai", "import", "create", "edit",
-        "duplicate", "delete", "manage_content", "save_library", "approve_content",
+        "view",
+        "copy",
+        "export",
+        "use_ai",
+        "import",
+        "create",
+        "edit",
+        "duplicate",
+        "delete",
+        "manage_content",
+        "save_library",
+        "approve_content",
+        # admin area (superadmin has "*", so it also gets manage_users and view_health)
+        "view_users",
+        "manage_access",
+        "manage_security",
+        "view_audit",
+        "manage_jira",
+        "view_analytics",
     },
     "superadmin": {"*"},
 }
@@ -48,7 +73,10 @@ def authenticate(username, password, *, client_ip: str = ""):
     try:
         limit_login(identity, client_ip or "")
     except RateLimitExceeded as exc:
-        return None, f"Too many login attempts. Try again in about {exc.retry_after} seconds."
+        return (
+            None,
+            f"Too many login attempts. Try again in about {exc.retry_after} seconds.",
+        )
     if is_locked(identity):
         return None, "Account temporarily locked. Try again later."
     with SessionLocal() as db:
@@ -80,7 +108,12 @@ def ensure_superadmin():
         return
 
     password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "").strip()
-    force_reset = os.getenv("FORCE_RESET_ADMIN_PASSWORD", "").strip().lower() in ("1", "true", "yes", "on")
+    force_reset = os.getenv("FORCE_RESET_ADMIN_PASSWORD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     with SessionLocal() as db:
         admin = db.scalar(select(User).where(User.username == BOOTSTRAP_ADMIN_USERNAME))

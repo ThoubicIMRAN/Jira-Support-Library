@@ -1,7 +1,7 @@
 """Per-user Confluence PAT; base URL from admin env CONFLUENCE_BASE_URL."""
+
 from __future__ import annotations
 
-from utils.errors import log_ignored
 import logging
 from typing import Any
 
@@ -12,8 +12,11 @@ from config import CONFLUENCE_BASE_URL, JIRA_REQUEST_TIMEOUT
 from database import SessionLocal
 from services.confluence_client import (
     ConfluenceError,
+)
+from services.confluence_client import (
     fetch_page as _fetch_page,
 )
+from utils.errors import log_ignored
 from utils.security import decrypt_secret, encrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -90,6 +93,7 @@ def disconnect(user_id: int) -> None:
 
 def _host(url: str) -> str:
     from urllib.parse import urlparse
+
     return (urlparse(url or "").hostname or "").lower()
 
 
@@ -101,8 +105,14 @@ def resolve_auth(user_id: int, page_url: str | None = None) -> dict[str, str]:
     """
     base = (CONFLUENCE_BASE_URL or "").strip().rstrip("/")
     if not base:
-        raise ConfluenceError("Confluence is not configured. An administrator must set CONFLUENCE_BASE_URL.")
-    if page_url and page_url.strip().lower().startswith("http") and _host(page_url) != _host(base):
+        raise ConfluenceError(
+            "Confluence is not configured. An administrator must set CONFLUENCE_BASE_URL."
+        )
+    if (
+        page_url
+        and page_url.strip().lower().startswith("http")
+        and _host(page_url) != _host(base)
+    ):
         raise ConfluenceError("That link is not on the configured Confluence site.")
     row = _load_row(user_id)
     if not row or not row.encrypted_secret:
@@ -154,7 +164,9 @@ def test_connection(user_id: int, page_url: str | None = None) -> dict[str, Any]
     except requests.RequestException as exc:
         result["attempts"].append(f"Bearer: network {exc}")
 
-    result["error"] = "Confluence PAT rejected or unreachable. Recreate the token and Save & test."
+    result["error"] = (
+        "Confluence PAT rejected or unreachable. Recreate the token and Save & test."
+    )
     return result
 
 

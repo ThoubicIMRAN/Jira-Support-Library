@@ -1,4 +1,5 @@
 """Semantic top-N library matches (used by Jira suggestions + duplicate warnings)."""
+
 from __future__ import annotations
 
 import logging
@@ -32,7 +33,7 @@ def find_top_matches(
         return []
 
     scored: list[tuple[float, str, str, str]] = []
-    new_embeddings = 0                      # bound the Ollama calls one ticket load can trigger
+    new_embeddings = 0  # bound the Ollama calls one ticket load can trigger
     with SessionLocal() as db:
         categories = db.scalars(
             select(Category)

@@ -1,15 +1,38 @@
 """Theme must match the Jira Command Library prototype."""
+
 import re
 from pathlib import Path
 
-from services.preference_service import DARK_TOKENS, DEFAULTS, LIGHT_TOKENS, ALLOWED_FONTS, preference_css
+from services.preference_service import (
+    ALLOWED_FONTS,
+    DARK_TOKENS,
+    DEFAULTS,
+    LIGHT_TOKENS,
+    preference_css,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
-CSS = (ROOT / "assets" / "styles.css").read_text(encoding="utf-8")
-PROTOTYPE = {"bg": "#f0f4fb", "bg2": "#ffffff", "bg3": "#e8edf8", "sb": "#0c1f6e", "border": "#dde3f0",
-             "text": "#111827", "text2": "#4b5675", "text3": "#8898b8"}
-PROTOTYPE_DARK = {"bg": "#0b0f1c", "bg2": "#111827", "bg3": "#1a2236", "sb": "#060d1f", "border": "#1e2d48",
-                  "text": "#e2e8f4", "text2": "#8898b8"}
+# Quote style is the formatter's business (Prettier uses double quotes), so compare with quotes normalised.
+CSS = (ROOT / "assets" / "styles.css").read_text(encoding="utf-8").replace('"', "'")
+PROTOTYPE = {
+    "bg": "#f0f4fb",
+    "bg2": "#ffffff",
+    "bg3": "#e8edf8",
+    "sb": "#0c1f6e",
+    "border": "#dde3f0",
+    "text": "#111827",
+    "text2": "#4b5675",
+    "text3": "#8898b8",
+}
+PROTOTYPE_DARK = {
+    "bg": "#0b0f1c",
+    "bg2": "#111827",
+    "bg3": "#1a2236",
+    "sb": "#060d1f",
+    "border": "#1e2d48",
+    "text": "#e2e8f4",
+    "text2": "#8898b8",
+}
 
 
 def test_light_tokens_match_prototype():
@@ -23,12 +46,30 @@ def test_dark_tokens_match_prototype():
 
 
 def test_prototype_is_default_theme():
-    assert DEFAULTS["theme"] == "light" and DEFAULTS["accent_color"] == "#0c46ce" and DEFAULTS["font_family"] == "DM Sans"
+    assert (
+        DEFAULTS["theme"] == "light"
+        and DEFAULTS["accent_color"] == "#0c46ce"
+        and DEFAULTS["font_family"] == "DM Sans"
+    )
 
 
 def test_stylesheet_has_no_angle_brackets():
     # st.html runs DOMPurify: a stray "<x>" in a comment makes it drop the whole sheet.
     assert "<" not in CSS
+
+
+def test_card_accent_and_pinned_styles_are_present():
+    assert "[class*='st-key-pcard_']::before" in CSS
+    assert "height: 3px" in CSS
+    assert ".jsl-proj-pinned" in CSS
+    assert "border-left: 3px solid var(--pc)" in CSS
+
+
+def test_response_card_index_is_zero_padded():
+    from components.cards import format_card_index
+
+    assert format_card_index(1) == "01"
+    assert format_card_index(12) == "12"
 
 
 def test_fonts_are_self_hosted_and_present():
@@ -56,10 +97,26 @@ def test_dark_and_system_modes():
 
 
 def test_invalid_values_fall_back_safely():
-    css = preference_css({"accent_color": "red;}</style><script>", "font_family": "Evil'; x", "theme": "neon"})
-    assert "<script>" not in css and "Evil" not in css and "#0c46ce" in css and "#f0f4fb" in css
+    css = preference_css(
+        {
+            "accent_color": "red;}</style><script>",
+            "font_family": "Evil'; x",
+            "theme": "neon",
+        }
+    )
+    assert (
+        "<script>" not in css
+        and "Evil" not in css
+        and "#0c46ce" in css
+        and "#f0f4fb" in css
+    )
 
 
 def test_body_font_choices_keep_brand_fonts():
     assert "DM Sans" in ALLOWED_FONTS
-    assert "Syne" not in preference_css({"font_family": "Arial"}).split("--sans:")[1].split(";")[0]
+    assert (
+        "Syne"
+        not in preference_css({"font_family": "Arial"})
+        .split("--sans:")[1]
+        .split(";")[0]
+    )

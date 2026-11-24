@@ -1,24 +1,28 @@
 """Resolution notes from Confluence (AI optional; template always works)."""
+
 from __future__ import annotations
 
 import logging
-
 
 from services.confluence_service import fetch_page_for_user
 
 logger = logging.getLogger(__name__)
 
 
-def _template_notes(page: dict, ticket_key: str, ticket_summary: str, extra: str) -> str:
+def _template_notes(
+    page: dict, ticket_key: str, ticket_summary: str, extra: str
+) -> str:
     title = page.get("title") or "documented procedure"
     link = page.get("link") or ""
     excerpt = (page.get("excerpt") or "").strip()
     steps = excerpt[:900] if excerpt else "(See documentation link for detailed steps.)"
-    extra_line = f"\n\nAdditional notes: {extra.strip()}" if (extra or "").strip() else ""
+    extra_line = (
+        f"\n\nAdditional notes: {extra.strip()}" if (extra or "").strip() else ""
+    )
     summary = ticket_summary or "the reported issue"
     return (
         f"Issue on {ticket_key or 'ticket'} ({summary}) has been addressed "
-        f"using the documented procedure \"{title}\".\n\n"
+        f'using the documented procedure "{title}".\n\n'
         f"{steps}{extra_line}\n\n"
         f"Documentation: {link}"
     )

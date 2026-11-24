@@ -1,4 +1,5 @@
 """Minimal first-visit notice for session cookies (Streamlit apps)."""
+
 from __future__ import annotations
 
 import streamlit as st

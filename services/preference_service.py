@@ -14,6 +14,7 @@ Public API:
     reset_preferences(user_id)           -> dict
     preference_css(prefs, *, sidebar_collapsed=False) -> str   (a <style> block)
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,9 +32,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # --------------------------------------------------------------------------- #
 DEFAULTS: dict[str, Any] = {
-    "theme": "light",            # prototype default
-    "accent_color": "#0c46ce",   # prototype --accent
-    "font_family": "DM Sans",    # prototype --sans
+    "theme": "light",  # prototype default
+    "accent_color": "#0c46ce",  # prototype --accent
+    "font_family": "DM Sans",  # prototype --sans
     "font_scale": 100,
     "code_font_size": 12,
     "line_height": 160,
@@ -57,7 +58,7 @@ ALLOWED_FONTS: tuple[str, ...] = (
 ALLOWED_THEMES: tuple[str, ...] = ("light", "dark", "system")
 ALLOWED_DENSITIES: tuple[str, ...] = ("compact", "comfortable", "spacious")
 
-SIDEBAR_WIDTH = "252px"            # prototype --sb-w
+SIDEBAR_WIDTH = "252px"  # prototype --sb-w
 SIDEBAR_WIDTH_COMPACT = "220px"
 SIDEBAR_WIDTH_COLLAPSED = "64px"
 
@@ -66,23 +67,35 @@ _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 # Exact prototype values (":root" and '[data-theme="dark"]').
 LIGHT_TOKENS: dict[str, str] = {
-    "bg": "#f0f4fb", "bg2": "#ffffff", "bg3": "#e8edf8",
-    "sb": "#0c1f6e", "sb2": "#0a1a5c",
-    "border": "#dde3f0", "border2": "#c5d0e8",
-    "text": "#111827", "text2": "#4b5675", "text3": "#8898b8",
+    "bg": "#f0f4fb",
+    "bg2": "#ffffff",
+    "bg3": "#e8edf8",
+    "sb": "#0c1f6e",
+    "sb2": "#0a1a5c",
+    "border": "#dde3f0",
+    "border2": "#c5d0e8",
+    "text": "#111827",
+    "text2": "#4b5675",
+    "text3": "#8898b8",
     "sh": "0 2px 12px rgba(12, 31, 110, .07)",
     "sh2": "0 6px 28px rgba(12, 31, 110, .13)",
-    "foot": "#e8edf8",           # card / project footer band
+    "foot": "#e8edf8",  # card / project footer band
     "chip-bg": "rgba(12, 70, 206, .08)",
     "chip-border": "rgba(12, 70, 206, .15)",
     "chip-fg": "var(--accent)",
     "scheme": "light",
 }
 DARK_TOKENS: dict[str, str] = {
-    "bg": "#0b0f1c", "bg2": "#111827", "bg3": "#1a2236",
-    "sb": "#060d1f", "sb2": "#050b18",
-    "border": "#1e2d48", "border2": "#2a3f60",
-    "text": "#e2e8f4", "text2": "#8898b8", "text3": "#3d5070",
+    "bg": "#0b0f1c",
+    "bg2": "#111827",
+    "bg3": "#1a2236",
+    "sb": "#060d1f",
+    "sb2": "#050b18",
+    "border": "#1e2d48",
+    "border2": "#2a3f60",
+    "text": "#e2e8f4",
+    "text2": "#8898b8",
+    "text3": "#3d5070",
     "sh": "0 2px 12px rgba(0, 0, 0, .35)",
     "sh2": "0 6px 28px rgba(0, 0, 0, .5)",
     "foot": "rgba(255, 255, 255, .02)",
@@ -93,8 +106,18 @@ DARK_TOKENS: dict[str, str] = {
 }
 # text3 in the prototype's dark palette (#3d5070) is below WCAG AA on dark
 # surfaces; high-contrast mode lifts the muted tones.
-_HC_LIGHT = {"text2": "#2b3550", "text3": "#4b5675", "border": "#9aa6c4", "border2": "#7a88ad"}
-_HC_DARK = {"text2": "#c3cde2", "text3": "#94a3c4", "border": "#3d5273", "border2": "#566d93"}
+_HC_LIGHT = {
+    "text2": "#2b3550",
+    "text3": "#4b5675",
+    "border": "#9aa6c4",
+    "border2": "#7a88ad",
+}
+_HC_DARK = {
+    "text2": "#c3cde2",
+    "text3": "#94a3c4",
+    "border": "#3d5273",
+    "border2": "#566d93",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -128,17 +151,31 @@ def _validated(values: Mapping[str, Any]) -> dict[str, Any]:
 
     return {
         "theme": theme if theme in ALLOWED_THEMES else DEFAULTS["theme"],
-        "accent_color": accent if _HEX_COLOR_RE.match(accent) else DEFAULTS["accent_color"],
+        "accent_color": accent
+        if _HEX_COLOR_RE.match(accent)
+        else DEFAULTS["accent_color"],
         "font_family": font if font in ALLOWED_FONTS else DEFAULTS["font_family"],
-        "font_scale": _as_int(raw["font_scale"], DEFAULTS["font_scale"], low=85, high=130),
-        "code_font_size": _as_int(raw["code_font_size"], DEFAULTS["code_font_size"], low=10, high=18),
-        "line_height": _as_int(raw["line_height"], DEFAULTS["line_height"], low=120, high=200),
+        "font_scale": _as_int(
+            raw["font_scale"], DEFAULTS["font_scale"], low=85, high=130
+        ),
+        "code_font_size": _as_int(
+            raw["code_font_size"], DEFAULTS["code_font_size"], low=10, high=18
+        ),
+        "line_height": _as_int(
+            raw["line_height"], DEFAULTS["line_height"], low=120, high=200
+        ),
         "density": density if density in ALLOWED_DENSITIES else DEFAULTS["density"],
-        "card_columns": _as_int(raw["card_columns"], DEFAULTS["card_columns"], low=2, high=4),
-        "border_radius": _as_int(raw["border_radius"], DEFAULTS["border_radius"], low=0, high=24),
+        "card_columns": _as_int(
+            raw["card_columns"], DEFAULTS["card_columns"], low=2, high=4
+        ),
+        "border_radius": _as_int(
+            raw["border_radius"], DEFAULTS["border_radius"], low=0, high=24
+        ),
         "reduce_motion": _as_bool(raw["reduce_motion"], DEFAULTS["reduce_motion"]),
         "high_contrast": _as_bool(raw["high_contrast"], DEFAULTS["high_contrast"]),
-        "compact_sidebar": _as_bool(raw["compact_sidebar"], DEFAULTS["compact_sidebar"]),
+        "compact_sidebar": _as_bool(
+            raw["compact_sidebar"], DEFAULTS["compact_sidebar"]
+        ),
     }
 
 
@@ -149,10 +186,14 @@ def get_preferences(user_id: int) -> dict[str, Any]:
     """Return validated preferences (defaults when the user has no row yet)."""
     try:
         with SessionLocal() as db:
-            row = db.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+            row = db.scalar(
+                select(UserPreference).where(UserPreference.user_id == user_id)
+            )
             if row is None:
                 return dict(DEFAULTS)
-            return _validated({key: getattr(row, key, DEFAULTS[key]) for key in DEFAULTS})
+            return _validated(
+                {key: getattr(row, key, DEFAULTS[key]) for key in DEFAULTS}
+            )
     except Exception:
         logger.exception("get_preferences failed for user %s", user_id)
         return dict(DEFAULTS)
@@ -162,7 +203,9 @@ def save_preferences(user_id: int, values: Mapping[str, Any]) -> dict[str, Any]:
     clean = _validated(values)
     try:
         with SessionLocal() as db:
-            row = db.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+            row = db.scalar(
+                select(UserPreference).where(UserPreference.user_id == user_id)
+            )
             if row is None:
                 row = UserPreference(user_id=user_id)
                 db.add(row)
@@ -178,7 +221,9 @@ def save_preferences(user_id: int, values: Mapping[str, Any]) -> dict[str, Any]:
 def reset_preferences(user_id: int) -> dict[str, Any]:
     try:
         with SessionLocal() as db:
-            row = db.scalar(select(UserPreference).where(UserPreference.user_id == user_id))
+            row = db.scalar(
+                select(UserPreference).where(UserPreference.user_id == user_id)
+            )
             if row is not None:
                 db.delete(row)
                 db.commit()
@@ -237,7 +282,9 @@ def preference_css(
     if prefs["theme"] == "dark":
         palette = f":root{{{dark}}}"
     elif prefs["theme"] == "system":
-        palette = f":root{{{light}}}@media (prefers-color-scheme: dark){{:root{{{dark}}}}}"
+        palette = (
+            f":root{{{light}}}@media (prefers-color-scheme: dark){{:root{{{dark}}}}}"
+        )
     else:
         palette = f":root{{{light}}}"
 

@@ -5,6 +5,7 @@ Safety rails: all keys must belong to one Jira project, a hard cap per run
 authentication failure, no raw exception text for unexpected errors, and a
 database log row for every run (see ``list_bulk_logs``).
 """
+
 from __future__ import annotations
 
 import json
@@ -42,35 +43,59 @@ def parse_keys(raw: str) -> list[str]:
     return list(seen)
 
 
-def validate_same_project(keys: list[str], required_prefix: str = "") -> tuple[str, list[str]]:
+def validate_same_project(
+    keys: list[str], required_prefix: str = ""
+) -> tuple[str, list[str]]:
     if not keys:
         raise BulkError("Enter at least one ticket key.")
     required = (required_prefix or "").strip().upper() or project_prefix(keys[0])
     bad = [k for k in keys if project_prefix(k) != required]
     if bad:
-        raise BulkError(f"All tickets must be in project {required}. Not allowed: {', '.join(bad[:5])}")
+        raise BulkError(
+            f"All tickets must be in project {required}. Not allowed: {', '.join(bad[:5])}"
+        )
     return required, keys
 
 
 def _write_log(user_id, prefix, keys, ok, failed, body):
     with SessionLocal() as db:
         row = BulkPostLog(
-            user_id=user_id, jira_prefix=prefix, total=len(keys), ok_count=len(ok), failed_count=len(failed),
-            ok_keys=",".join(ok), failed_json=json.dumps(failed, ensure_ascii=False),
+            user_id=user_id,
+            jira_prefix=prefix,
+            total=len(keys),
+            ok_count=len(ok),
+            failed_count=len(failed),
+            ok_keys=",".join(ok),
+            failed_json=json.dumps(failed, ensure_ascii=False),
             body_preview=(body or "").strip().replace("\n", " ")[:300],
         )
         db.add(row)
-        db.add(AuditLog(user_id=user_id, action="jira_bulk_comment", entity_type="jira_project",
-                        entity_id=prefix, details=f"{len(ok)}/{len(keys)} posted"))
+        db.add(
+            AuditLog(
+                user_id=user_id,
+                action="jira_bulk_comment",
+                entity_type="jira_project",
+                entity_id=prefix,
+                details=f"{len(ok)}/{len(keys)} posted",
+            )
+        )
         db.commit()
         return row.id
 
 
-def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix: str = "", *,
-                      time_raw: str = "", internal: bool = False,
-                      mention_mode: str = "plain",
-                      resolution_notes: str = "",
-                      max_tickets: int | None = None, delay: float | None = None) -> dict:
+def post_bulk_comment(
+    user_id: int,
+    keys: list[str],
+    body: str,
+    required_prefix: str = "",
+    *,
+    time_raw: str = "",
+    internal: bool = False,
+    mention_mode: str = "plain",
+    resolution_notes: str = "",
+    max_tickets: int | None = None,
+    delay: float | None = None,
+) -> dict:
     """Post one comment to many tickets. Returns {prefix, ok, failed[(key, msg)], log_id}.
 
     ``body`` must be the **template** (with @R / @NAME / Customer), not a preview
@@ -86,10 +111,13 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
     if not (body or "").strip():
         raise BulkError("Comment text is empty.")
     from services.rate_limit import limit_bulk_run
+
     limit_bulk_run(user_id)
     prefix, keys = validate_same_project(keys, required_prefix)
     if len(keys) > limit:
-        raise BulkError(f"Bulk posting is limited to {limit} tickets at a time (you entered {len(keys)}).")
+        raise BulkError(
+            f"Bulk posting is limited to {limit} tickets at a time (you entered {len(keys)})."
+        )
 
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.id == user_id))
@@ -123,7 +151,9 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
         except (JiraError, ValueError) as exc:
             failed.append([key, str(exc)[:200]])
             if isinstance(exc, JiraError) and exc.status in (401, 403) and not ok:
-                failed.extend([k, "skipped (authentication failed)"] for k in keys[index + 1:])
+                failed.extend(
+                    [k, "skipped (authentication failed)"] for k in keys[index + 1 :]
+                )
                 break
         except Exception:  # noqa: BLE001
             logger.exception("Bulk comment failed for %s", key)
@@ -135,20 +165,31 @@ def post_bulk_comment(user_id: int, keys: list[str], body: str, required_prefix:
     return {"prefix": prefix, "ok": ok, "failed": failed, "log_id": log_id}
 
 
-
 def list_bulk_logs(user_id: int | None = None, limit: int = 50) -> list[dict]:
     """Newest first. ``user_id=None`` returns every user's runs (admin view)."""
     with SessionLocal() as db:
-        stmt = select(BulkPostLog, User.username).join(User, User.id == BulkPostLog.user_id, isouter=True)
+        stmt = select(BulkPostLog, User.username).join(
+            User, User.id == BulkPostLog.user_id, isouter=True
+        )
         if user_id is not None:
             stmt = stmt.where(BulkPostLog.user_id == user_id)
-        rows = db.execute(stmt.order_by(BulkPostLog.created_at.desc()).limit(limit)).all()
+        rows = db.execute(
+            stmt.order_by(BulkPostLog.created_at.desc()).limit(limit)
+        ).all()
     out = []
     for row, username in rows:
-        out.append({
-            "id": row.id, "when": row.created_at, "user": username or "(deleted)", "prefix": row.jira_prefix,
-            "total": row.total, "ok": row.ok_count, "failed": row.failed_count,
-            "ok_keys": [k for k in row.ok_keys.split(",") if k], "failed_items": json.loads(row.failed_json or "[]"),
-            "text": row.body_preview,
-        })
+        out.append(
+            {
+                "id": row.id,
+                "when": row.created_at,
+                "user": username or "(deleted)",
+                "prefix": row.jira_prefix,
+                "total": row.total,
+                "ok": row.ok_count,
+                "failed": row.failed_count,
+                "ok_keys": [k for k in row.ok_keys.split(",") if k],
+                "failed_items": json.loads(row.failed_json or "[]"),
+                "text": row.body_preview,
+            }
+        )
     return out

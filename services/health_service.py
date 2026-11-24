@@ -1,4 +1,5 @@
 """Operational health checks for admin dashboard."""
+
 from __future__ import annotations
 
 import logging
@@ -56,8 +57,9 @@ def health() -> dict:
 
     # SMTP (active config present)
     try:
-        from database import SessionLocal, SMTPConfig
         from sqlalchemy import select
+
+        from database import SessionLocal, SMTPConfig
 
         with SessionLocal() as db:
             cfg = db.scalar(

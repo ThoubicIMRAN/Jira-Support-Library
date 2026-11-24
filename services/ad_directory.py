@@ -3,6 +3,7 @@
 Disabled by default. Enable with AD_ENABLED=true and configure LDAP/Graph later.
 Until then ad_enabled() is False and enrich_from_reporter() returns None.
 """
+
 from __future__ import annotations
 
 import logging
@@ -13,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 def ad_enabled() -> bool:
-    return os.getenv("AD_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("AD_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def enrich_from_reporter(

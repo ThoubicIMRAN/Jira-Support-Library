@@ -1,11 +1,17 @@
 """Profile avatar storage (bytes in DB) with validation."""
+
 from __future__ import annotations
 
-from database import SessionLocal, User
+import base64
 import html
+import io
 
+import streamlit as st
+
+from database import SessionLocal, User
 from services.image_service import process_image
 from services.rate_limit import limit_avatar_upload
+from utils.errors import log_ignored
 
 ALLOWED_MIME = {
     "image/png": ".png",
@@ -51,12 +57,15 @@ def set_avatar(
         if not user:
             raise AvatarError("User not found.")
         try:
-            user.avatar_data = process_image(data, max_bytes=MAX_BYTES, size=(256, 256), square=True)
+            user.avatar_data = process_image(
+                data, max_bytes=MAX_BYTES, size=(256, 256), square=True
+            )
         except ValueError as exc:
             raise AvatarError(str(exc)) from None
         user.avatar_mime = "image/png"
         user.avatar_url = None  # prefer DB blob
         db.commit()
+    get_avatar_data_uri.clear()  # the top bar shows the new photo immediately
 
 
 def clear_avatar(
@@ -75,6 +84,7 @@ def clear_avatar(
         user.avatar_data = None
         user.avatar_mime = None
         db.commit()
+    get_avatar_data_uri.clear()
 
 
 def get_avatar(user_id: int) -> tuple[bytes, str] | None:
@@ -85,20 +95,46 @@ def get_avatar(user_id: int) -> tuple[bytes, str] | None:
         return bytes(user.avatar_data), (user.avatar_mime or "image/png")
 
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=256)
+def get_avatar_data_uri(user_id: int, px: int = 96) -> str | None:
+    """Small square ``data:`` URI of the user's photo for inline <img>/CSS use, or None.
+
+    Photos are stored at 256 px; shrinking here keeps the page payload small on every rerun.
+    """
+    found = get_avatar(int(user_id))
+    if not found:
+        return None
+    data, mime = found
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(data))
+        img.thumbnail((px, px))
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        data, mime = buf.getvalue(), "image/png"
+    except Exception:  # noqa: BLE001 - fall back to the stored bytes
+        log_ignored(__name__)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def render_avatar_image(user, *, width: int = 64) -> None:
     """Show avatar in Streamlit if present."""
     import streamlit as st
+
     try:
         if getattr(user, "avatar_data", None):
             st.image(bytes(user.avatar_data), width=width)
         elif str(getattr(user, "avatar_url", "") or "").startswith("https://"):
             st.image(user.avatar_url, width=width)
         else:
-            initials = "".join(p[0] for p in (user.full_name or user.username or "?").split()[:2]).upper()
+            initials = "".join(
+                p[0] for p in (user.full_name or user.username or "?").split()[:2]
+            ).upper()
             st.markdown(
                 f'<div style="width:{width}px;height:{width}px;border-radius:50%;'
-                f'background:#2563eb;color:#fff;display:flex;align-items:center;'
-                f'justify-content:center;font-weight:700;font-size:{width//3}px">{html.escape(initials)}</div>',
+                f"background:#2563eb;color:#fff;display:flex;align-items:center;"
+                f'justify-content:center;font-weight:700;font-size:{width // 3}px">{html.escape(initials)}</div>',
                 unsafe_allow_html=True,
             )
     except Exception:

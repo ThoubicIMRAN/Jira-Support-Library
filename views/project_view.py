@@ -4,9 +4,9 @@ Copy uses Streamlit's native ``st.code`` clipboard icon (no custom button).
 All writes go through ``services.content_service`` which enforces RBAC,
 validates input, uses one transaction and writes the audit trail.
 """
+
 from __future__ import annotations
 
-from utils.errors import safe_message, log_ignored
 import json
 import logging
 from typing import Sequence
@@ -16,24 +16,38 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from auth import allowed
-from config import JIRA_BASE_URL, JIRA_ENABLED
 from components.cards import (
-    empty_state, page_header, preview_text, response_card_header, safe_key,
+    empty_state,
+    page_header,
+    preview_text,
+    response_card_header,
+    safe_key,
 )
+from config import JIRA_BASE_URL, JIRA_ENABLED
 from database import Category, Project, SessionLocal
 from services.content_service import (
-    ContentError, create_response, delete_response, duplicate_response, find_near_duplicates,
-    export_project_payload, import_project_payload, update_response,
+    ContentError,
+    create_response,
+    delete_response,
+    duplicate_response,
+    export_project_payload,
+    find_near_duplicates,
+    import_project_payload,
+    update_response,
 )
-from services.workspace_service import designation_overrides, favorite_ids, toggle_favorite
-from utils.layout import card_columns, flash, show_flash
-from utils.navigation import PAGE_HOME, goto
-from utils.personalization import PLACEHOLDER_HELP, personalize
 from services.jira_text import ensure_signature_placeholders
-from views.jira_action_dialog import jira_action_dialog
 from services.project_access import can_view_project
 from services.stale import is_stale, stale_label
+from services.workspace_service import (
+    designation_overrides,
+    favorite_ids,
+    toggle_favorite,
+)
+from utils.errors import log_ignored, safe_message
+from utils.layout import card_columns, flash, show_flash
+from utils.personalization import PLACEHOLDER_HELP, personalize
 from views.bulk_jira import bulk_comment_dialog
+from views.jira_action_dialog import jira_action_dialog
 from views.jira_panel import render_jira_panel
 
 logger = logging.getLogger(__name__)
@@ -63,7 +77,9 @@ def _category_options(project_id: int) -> dict[str, int]:
     """Labels for selects: top-level as name; children as 'Parent / Child'."""
     with SessionLocal() as db:
         rows = db.scalars(
-            select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
+            select(Category)
+            .where(Category.project_id == project_id)
+            .order_by(Category.sort_order, Category.id)
         ).all()
     by_id = {r.id: r for r in rows}
     out: dict[str, int] = {}
@@ -88,7 +104,9 @@ def _category_filter_options(project_id: int) -> list[tuple[str, int | None]]:
     """Sidebar filter: (label, category_id|None for all)."""
     with SessionLocal() as db:
         rows = db.scalars(
-            select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
+            select(Category)
+            .where(Category.project_id == project_id)
+            .order_by(Category.sort_order, Category.id)
         ).all()
     opts: list[tuple[str, int | None]] = [("All categories", None)]
     for r in rows:
@@ -98,7 +116,6 @@ def _category_filter_options(project_id: int) -> list[tuple[str, int | None]]:
                 if ch.parent_id == r.id:
                     opts.append((f"  └ {ch.name}", ch.id))
     return opts
-
 
 
 def _save_error(exc: Exception) -> None:
@@ -146,19 +163,25 @@ def add_response_dialog(user_id: int, role: str, project_id: int) -> None:
             value=False,
             key="add_resp_force_similar",
         )
-        submitted = st.form_submit_button("Save response", type="primary", width="stretch")
+        submitted = st.form_submit_button(
+            "Save response", type="primary", width="stretch"
+        )
     if submitted:
         try:
             body = ensure_signature_placeholders(body or "")
             near = find_near_duplicates(project_id, body, threshold=0.85, limit=3)
             if near and not force_similar:
-                titles = ", ".join(f"{h['title'][:40]} ({h['score']:.0%})" for h in near)
+                titles = ", ".join(
+                    f"{h['title'][:40]} ({h['score']:.0%})" for h in near
+                )
                 st.warning(
                     f"Similar response(s) found (≥85%): {titles}. "
                     "Tick **Save even if similar…** to store anyway."
                 )
             else:
-                create_response(user_id, role, names[cat_name], title, badge, preview, body)
+                create_response(
+                    user_id, role, names[cat_name], title, badge, preview, body
+                )
                 flash("Response added.")
                 st.rerun()
         except Exception as exc:  # noqa: BLE001
@@ -171,19 +194,39 @@ def add_response_dialog(user_id: int, role: str, project_id: int) -> None:
 def edit_response_dialog(user_id: int, role: str, project_id: int, row) -> None:
     names = _category_options(project_id)
     labels = list(names)
-    current = next((n for n, i in names.items() if i == row.category_id), labels[0] if labels else None)
+    current = next(
+        (n for n, i in names.items() if i == row.category_id),
+        labels[0] if labels else None,
+    )
     with st.form("edit_response_form"):
-        cat_name = st.selectbox("Category", labels, index=labels.index(current) if current in labels else 0)
+        cat_name = st.selectbox(
+            "Category", labels, index=labels.index(current) if current in labels else 0
+        )
         title = st.text_input("Title", row.title or "", max_chars=200)
         c1, c2 = st.columns([1, 3])
         badge = c1.text_input("Badge", row.badge or "", max_chars=40)
         preview = c2.text_input("Preview", row.preview or "", max_chars=300)
-        body = st.text_area("Response body", row.response_body or "", height=260, help=PLACEHOLDER_HELP)
-        st.caption("Keep **@NAME** / **@DESIGNATION** in the signature — they are filled from your profile.")
-        submitted = st.form_submit_button("Update response", type="primary", width="stretch")
+        body = st.text_area(
+            "Response body", row.response_body or "", height=260, help=PLACEHOLDER_HELP
+        )
+        st.caption(
+            "Keep **@NAME** / **@DESIGNATION** in the signature — they are filled from your profile."
+        )
+        submitted = st.form_submit_button(
+            "Update response", type="primary", width="stretch"
+        )
     if submitted:
         try:
-            update_response(user_id, role, row.id, names[cat_name], title, badge, preview, ensure_signature_placeholders(body or ""))
+            update_response(
+                user_id,
+                role,
+                row.id,
+                names[cat_name],
+                title,
+                badge,
+                preview,
+                ensure_signature_placeholders(body or ""),
+            )
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, ContentError):
                 logger.exception("Update response failed")
@@ -194,7 +237,9 @@ def edit_response_dialog(user_id: int, role: str, project_id: int, row) -> None:
 
 
 @st.dialog("Delete response")
-def delete_response_dialog(user_id: int, role: str, response_id: str, title: str) -> None:
+def delete_response_dialog(
+    user_id: int, role: str, response_id: str, title: str
+) -> None:
     st.write(f"Delete **{title}**? This cannot be undone.")
     left, right = st.columns(2)
     if left.button("Cancel", width="stretch"):
@@ -228,18 +273,36 @@ def _toggle_favorite(user_id: int, response_id: str) -> None:
         st.rerun()
 
 
-def _render_response_card(user, project: Project, category: Category, row, favorites: set, overrides: dict, index: int) -> None:
+def _render_response_card(
+    user,
+    project: Project,
+    category: Category,
+    row,
+    favorites: set,
+    overrides: dict,
+    index: int,
+) -> None:
     body = personalize(row.response_body, user, project.id, overrides)
     card_key = f"rcard_{safe_key(row.id)}"
-    can_dupe, can_edit, can_delete = (allowed(user.role, p) for p in ("duplicate", "edit", "delete"))
+    can_dupe, can_edit, can_delete = (
+        allowed(user.role, p) for p in ("duplicate", "edit", "delete")
+    )
     is_fav = row.id in favorites
 
     with st.container(key=card_key):
         response_card_header(
-            container_key=card_key, index=index, title=row.title, badge=row.badge,
-            color=project.color, subtitle=(
+            container_key=card_key,
+            index=index,
+            title=row.title,
+            badge=row.badge,
+            color=project.color,
+            subtitle=(
                 f"Updated {_fmt_date(row.updated_at)}"
-                + (f" · ⚠️ {stale_label(row.updated_at)}" if is_stale(row.updated_at) else "")
+                + (
+                    f" · ⚠️ {stale_label(row.updated_at)}"
+                    if is_stale(row.updated_at)
+                    else ""
+                )
             ),
         )
         preview_text(row.preview)
@@ -247,14 +310,27 @@ def _render_response_card(user, project: Project, category: Category, row, favor
 
         with st.container(key=f"rfoot_{safe_key(row.id)}"):
             jira_on = JIRA_ENABLED and bool(JIRA_BASE_URL)
-            cols = st.columns(1 + jira_on + can_dupe + can_edit + can_delete, gap="small")
+            cols = st.columns(
+                1 + jira_on + can_dupe + can_edit + can_delete, gap="small"
+            )
             slot = iter(cols)
-            if jira_on and next(slot).button("🎫", key=f"jira_{row.id}", width="stretch", help="Jira: comment, log time, transition"):
+            if jira_on and next(slot).button(
+                "🎫",
+                key=f"jira_{row.id}",
+                width="stretch",
+                help="Jira: comment, log time, transition",
+            ):
                 jira_action_dialog(user, project, body, response_id=str(row.id))
-            if next(slot).button("★" if is_fav else "☆", key=f"fav_{row.id}", width="stretch",
-                                 help="Remove from favorites" if is_fav else "Add to favorites"):
+            if next(slot).button(
+                "★" if is_fav else "☆",
+                key=f"fav_{row.id}",
+                width="stretch",
+                help="Remove from favorites" if is_fav else "Add to favorites",
+            ):
                 _toggle_favorite(user.id, row.id)
-            if can_dupe and next(slot).button("⧉", key=f"dupe_{row.id}", width="stretch", help="Duplicate"):
+            if can_dupe and next(slot).button(
+                "⧉", key=f"dupe_{row.id}", width="stretch", help="Duplicate"
+            ):
                 try:
                     duplicate_response(row.id, user.id, user.role)
                 except Exception:  # noqa: BLE001
@@ -263,9 +339,13 @@ def _render_response_card(user, project: Project, category: Category, row, favor
                 else:
                     flash("Response duplicated.")
                     st.rerun()
-            if can_edit and next(slot).button("✏️", key=f"edit_{row.id}", width="stretch", help="Edit"):
+            if can_edit and next(slot).button(
+                "✏️", key=f"edit_{row.id}", width="stretch", help="Edit"
+            ):
                 edit_response_dialog(user.id, user.role, project.id, row)
-            if can_delete and next(slot).button("🗑️", key=f"del_{row.id}", width="stretch", help="Delete"):
+            if can_delete and next(slot).button(
+                "🗑️", key=f"del_{row.id}", width="stretch", help="Delete"
+            ):
                 delete_response_dialog(user.id, user.role, row.id, row.title)
 
 
@@ -274,12 +354,18 @@ def _filter_rows(category: Category, term: str) -> list:
     if not term:
         return rows
     return [
-        r for r in rows
-        if term in " ".join(filter(None, [r.title, r.badge, r.preview, r.response_body, category.name])).lower()
+        r
+        for r in rows
+        if term
+        in " ".join(
+            filter(None, [r.title, r.badge, r.preview, r.response_body, category.name])
+        ).lower()
     ]
 
 
-def _render_categories(user, project, categories: Sequence[Category], term: str, category_filter) -> int:
+def _render_categories(
+    user, project, categories: Sequence[Category], term: str, category_filter
+) -> int:
     from components.cards import section_header
 
     favorites = set(favorite_ids(user.id))
@@ -288,7 +374,10 @@ def _render_categories(user, project, categories: Sequence[Category], term: str,
     visible = 0
     for category in categories:
         if category_filter:
-            if category.id != category_filter and getattr(category, "parent_id", None) != category_filter:
+            if (
+                category.id != category_filter
+                and getattr(category, "parent_id", None) != category_filter
+            ):
                 continue
         rows = _filter_rows(category, term)
         if not rows:
@@ -307,7 +396,9 @@ def _render_categories(user, project, categories: Sequence[Category], term: str,
         columns = st.columns(columns_n, gap="medium")
         for index, row in enumerate(rows):
             with columns[index % columns_n]:
-                _render_response_card(user, project, category, row, favorites, overrides, index + 1)
+                _render_response_card(
+                    user, project, category, row, favorites, overrides, index + 1
+                )
     return visible
 
 
@@ -315,35 +406,64 @@ def _render_categories(user, project, categories: Sequence[Category], term: str,
 # Toolbar
 # --------------------------------------------------------------------------- #
 def _render_toolbar(user, project: Project) -> str:
-    c_search, c_add, c_bulk, c_export = st.columns([4.4, 1.2, 1.4, 1.2], vertical_alignment="bottom")
-    query = c_search.text_input(
-        "Search responses", placeholder="🔍  Search title, badge, preview, category or text",
-        key="project_search", label_visibility="collapsed",
+    c_search, c_add, c_bulk, c_export = st.columns(
+        [4.4, 1.2, 1.4, 1.2], vertical_alignment="bottom"
     )
-    if allowed(user.role, "create") and c_add.button("➕ Add", width="stretch", type="primary", key="project_add"):
+    query = c_search.text_input(
+        "Search responses",
+        placeholder="🔍  Search title, badge, preview, category or text",
+        key="project_search",
+        label_visibility="collapsed",
+    )
+    if allowed(user.role, "create") and c_add.button(
+        "➕ Add", width="stretch", type="primary", key="project_add"
+    ):
         add_response_dialog(user.id, user.role, project.id)
 
-    if JIRA_ENABLED and JIRA_BASE_URL and c_bulk.button("📣 Bulk comment", width="stretch", key="project_bulk", help="Post one comment to many Jira tickets"):
+    if (
+        JIRA_ENABLED
+        and JIRA_BASE_URL
+        and c_bulk.button(
+            "📣 Bulk comment",
+            width="stretch",
+            key="project_bulk",
+            help="Post one comment to many Jira tickets",
+        )
+    ):
         bulk_comment_dialog(user, project)
 
     payload = export_project_payload(project.id) or {}
     c_export.download_button(
-        "📤 Export", data=json.dumps(payload, ensure_ascii=False, indent=2),
-        file_name=f"{project.key}_library.json", mime="application/json", width="stretch", key="project_export",
+        "📤 Export",
+        data=json.dumps(payload, ensure_ascii=False, indent=2),
+        file_name=f"{project.key}_library.json",
+        mime="application/json",
+        width="stretch",
+        key="project_export",
     )
 
     if allowed(user.role, "import"):
         with st.expander("📥 Import from JSON"):
-            uploaded = st.file_uploader("Select a project JSON file", type=["json"], key="project_import_file")
-            if uploaded and st.button("Validate and import", type="primary", key="project_import_confirm"):
+            uploaded = st.file_uploader(
+                "Select a project JSON file", type=["json"], key="project_import_file"
+            )
+            if uploaded and st.button(
+                "Validate and import", type="primary", key="project_import_confirm"
+            ):
                 try:
-                    imported = import_project_payload(project.id, json.loads(uploaded.getvalue()), user.id, user.role)
+                    imported = import_project_payload(
+                        project.id, json.loads(uploaded.getvalue()), user.id, user.role
+                    )
                 except json.JSONDecodeError:
                     st.error("That file is not valid JSON.")
                 except Exception as exc:  # noqa: BLE001
                     if not isinstance(exc, ContentError):
                         logger.exception("Import failed")
-                    st.error(str(exc) if isinstance(exc, ContentError) else "Import failed. Please try again.")
+                    st.error(
+                        str(exc)
+                        if isinstance(exc, ContentError)
+                        else "Import failed. Please try again."
+                    )
                 else:
                     flash(f"Imported {imported} responses.")
                     st.rerun()
@@ -354,25 +474,29 @@ def _render_toolbar(user, project: Project) -> str:
 # Entry point
 # --------------------------------------------------------------------------- #
 
+
 def render(user) -> None:
     show_flash()
     project_id = st.session_state.get("project_id")
-    project, categories = _load_project_context(int(project_id)) if project_id else (None, [])
+    project, categories = (
+        _load_project_context(int(project_id)) if project_id else (None, [])
+    )
 
     # Drop stale category filter from another project
     _cf = st.session_state.get("category_filter")
     if _cf and categories and _cf not in {c.id for c in categories}:
         st.session_state.pop("category_filter", None)
     if project and not can_view_project(user, project.id):
-        project = None  # same message as a missing project: do not reveal that it exists
+        project = (
+            None  # same message as a missing project: do not reveal that it exists
+        )
     if not project:
-        empty_state("📁", "Project not found", "It may have been archived or you have not selected one.")
-        if st.button("← Back to Home", key="project_missing_home"):
-            goto(PAGE_HOME, clear_project=True)
+        empty_state(
+            "📁",
+            "Project not found",
+            "It may have been archived or you have not selected one.",
+        )
         return
-
-    if st.button("← Back to Home", key="project_back_home", type="tertiary"):
-        goto(PAGE_HOME, clear_project=True)
 
     page_header(project.name, project.description or None, icon=project.icon or "📁")
     total = sum(len(c.responses or []) for c in categories)
@@ -384,6 +508,12 @@ def render(user) -> None:
 
     render_jira_panel(user, project)
     term = _render_toolbar(user, project)
-    visible = _render_categories(user, project, categories, term, st.session_state.get("category_filter"))
+    visible = _render_categories(
+        user, project, categories, term, st.session_state.get("category_filter")
+    )
     if visible == 0:
-        empty_state("🗂️", "No responses match your filters", "Clear the search box or pick another category.")
+        empty_state(
+            "🗂️",
+            "No responses match your filters",
+            "Clear the search box or pick another category.",
+        )

@@ -1,105 +1,203 @@
-from utils.errors import log_ignored
 from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select, update
-from utils.timeutil import as_utc
-from database import SessionLocal, User, PasswordResetToken, UserInvitation, AuditLog
+
 from auth import hash_password
-from config import APP_URL, RESET_TOKEN_MINUTES, INVITATION_TOKEN_HOURS
-from email_service import send_html_email, branded_email
-from utils.security import token_urlsafe, token_hash
+from config import APP_URL, INVITATION_TOKEN_HOURS, RESET_TOKEN_MINUTES
+from database import AuditLog, PasswordResetToken, SessionLocal, User, UserInvitation
+from email_service import branded_email, send_html_email
+from utils.errors import log_ignored
+from utils.security import token_hash, token_urlsafe
+from utils.timeutil import as_utc
 
 
-def utcnow(): return datetime.now(timezone.utc)
+def utcnow():
+    return datetime.now(timezone.utc)
 
 
 def request_password_reset(email):
     with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.email == email.strip().lower(), User.is_active == True))
+        user = db.scalar(
+            select(User).where(
+                User.email == email.strip().lower(), User.is_active == True
+            )
+        )
         if not user:
             return True
-        db.execute(update(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)).values(used_at=utcnow()))
+        db.execute(
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+            )
+            .values(used_at=utcnow())
+        )
         raw = token_urlsafe()
-        db.add(PasswordResetToken(user_id=user.id, token_hash=token_hash(raw), expires_at=utcnow()+timedelta(minutes=RESET_TOKEN_MINUTES)))
+        db.add(
+            PasswordResetToken(
+                user_id=user.id,
+                token_hash=token_hash(raw),
+                expires_at=utcnow() + timedelta(minutes=RESET_TOKEN_MINUTES),
+            )
+        )
         db.commit()
-        url=f'{APP_URL}/?reset_token={raw}'
-        send_html_email(user.email, 'Reset your Jira Support Library password', branded_email('Password reset', f'<p>Hello {user.full_name},</p><p>This link expires in {RESET_TOKEN_MINUTES} minutes and can be used once.</p>', 'Reset password', url))
+        url = f"{APP_URL}/?reset_token={raw}"
+        send_html_email(
+            user.email,
+            "Reset your Jira Support Library password",
+            branded_email(
+                "Password reset",
+                f"<p>Hello {user.full_name},</p><p>This link expires in {RESET_TOKEN_MINUTES} minutes and can be used once.</p>",
+                "Reset password",
+                url,
+            ),
+        )
         return True
 
 
 def validate_reset_token(raw):
     with SessionLocal() as db:
-        row=db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash==token_hash(raw), PasswordResetToken.used_at.is_(None)))
-        if not row or as_utc(row.expires_at) < utcnow(): return None
+        row = db.scalar(
+            select(PasswordResetToken).where(
+                PasswordResetToken.token_hash == token_hash(raw),
+                PasswordResetToken.used_at.is_(None),
+            )
+        )
+        if not row or as_utc(row.expires_at) < utcnow():
+            return None
         return row.user_id
 
 
 def consume_reset_token(raw, password):
     with SessionLocal() as db:
-        row=db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash==token_hash(raw), PasswordResetToken.used_at.is_(None)))
-        if not row or as_utc(row.expires_at) < utcnow(): return False
-        user=db.get(User,row.user_id); user.password_hash=hash_password(password); user.must_change_password=False; row.used_at=utcnow()
-        db.add(AuditLog(user_id=user.id,action='password_reset',entity_type='user',entity_id=str(user.id),details='self-service'))
-        db.commit(); return True
+        row = db.scalar(
+            select(PasswordResetToken).where(
+                PasswordResetToken.token_hash == token_hash(raw),
+                PasswordResetToken.used_at.is_(None),
+            )
+        )
+        if not row or as_utc(row.expires_at) < utcnow():
+            return False
+        user = db.get(User, row.user_id)
+        user.password_hash = hash_password(password)
+        user.must_change_password = False
+        row.used_at = utcnow()
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action="password_reset",
+                entity_type="user",
+                entity_id=str(user.id),
+                details="self-service",
+            )
+        )
+        db.commit()
+        return True
 
 
 def create_invitation(email, role, designation, invited_by):
-    raw=token_urlsafe()
+    raw = token_urlsafe()
     with SessionLocal() as db:
-        row=UserInvitation(email=email.strip().lower(),role=role,designation=designation.strip() or 'Support Engineer',token_hash=token_hash(raw),expires_at=utcnow()+timedelta(hours=INVITATION_TOKEN_HOURS),invited_by=invited_by)
-        db.add(row); db.commit()
-    url=f'{APP_URL}/?invite_token={raw}'
-    send_html_email(email, 'Invitation to Jira Support Library', branded_email('You are invited', f'<p>You were invited with the <strong>{role}</strong> role.</p><p>This invitation expires in {INVITATION_TOKEN_HOURS} hours.</p>', 'Accept invitation', url))
+        row = UserInvitation(
+            email=email.strip().lower(),
+            role=role,
+            designation=designation.strip() or "Support Engineer",
+            token_hash=token_hash(raw),
+            expires_at=utcnow() + timedelta(hours=INVITATION_TOKEN_HOURS),
+            invited_by=invited_by,
+        )
+        db.add(row)
+        db.commit()
+    url = f"{APP_URL}/?invite_token={raw}"
+    send_html_email(
+        email,
+        "Invitation to Jira Support Library",
+        branded_email(
+            "You are invited",
+            f"<p>You were invited with the <strong>{role}</strong> role.</p><p>This invitation expires in {INVITATION_TOKEN_HOURS} hours.</p>",
+            "Accept invitation",
+            url,
+        ),
+    )
     return True
 
 
 def validate_invitation(raw):
     with SessionLocal() as db:
-        row=db.scalar(select(UserInvitation).where(UserInvitation.token_hash==token_hash(raw),UserInvitation.accepted_at.is_(None)))
-        if not row or as_utc(row.expires_at) < utcnow(): return None
-        return {'email':row.email,'role':row.role,'designation':row.designation}
+        row = db.scalar(
+            select(UserInvitation).where(
+                UserInvitation.token_hash == token_hash(raw),
+                UserInvitation.accepted_at.is_(None),
+            )
+        )
+        if not row or as_utc(row.expires_at) < utcnow():
+            return None
+        return {"email": row.email, "role": row.role, "designation": row.designation}
 
 
 def accept_invitation(raw, username, full_name, password):
     with SessionLocal() as db:
-        row=db.scalar(select(UserInvitation).where(UserInvitation.token_hash==token_hash(raw),UserInvitation.accepted_at.is_(None)))
-        if not row or as_utc(row.expires_at) < utcnow(): return False
-        if db.scalar(select(User).where((User.username==username)|(User.email==row.email))): raise ValueError('Username or email already exists.')
-        user=User(username=username,email=row.email,full_name=full_name,designation=row.designation,role=row.role,password_hash=hash_password(password),must_change_password=False)
-        db.add(user); row.accepted_at=utcnow(); db.commit(); return True
+        row = db.scalar(
+            select(UserInvitation).where(
+                UserInvitation.token_hash == token_hash(raw),
+                UserInvitation.accepted_at.is_(None),
+            )
+        )
+        if not row or as_utc(row.expires_at) < utcnow():
+            return False
+        if db.scalar(
+            select(User).where((User.username == username) | (User.email == row.email))
+        ):
+            raise ValueError("Username or email already exists.")
+        user = User(
+            username=username,
+            email=row.email,
+            full_name=full_name,
+            designation=row.designation,
+            role=row.role,
+            password_hash=hash_password(password),
+            must_change_password=False,
+        )
+        db.add(user)
+        row.accepted_at = utcnow()
+        db.commit()
+        return True
 
 
-def register_user(username, full_name, email, password, designation='Support Engineer'):
+def register_user(username, full_name, email, password, designation="Support Engineer"):
     """Public self-registration as role=user. Raises ValueError on conflict."""
-    username = (username or '').strip()
-    full_name = (full_name or '').strip()
-    email = (email or '').strip().lower() or None
-    designation = (designation or 'Support Engineer').strip() or 'Support Engineer'
+    username = (username or "").strip()
+    full_name = (full_name or "").strip()
+    email = (email or "").strip().lower() or None
+    designation = (designation or "Support Engineer").strip() or "Support Engineer"
     if not username or not full_name:
-        raise ValueError('Username and full name are required.')
+        raise ValueError("Username and full name are required.")
     with SessionLocal() as db:
         if db.scalar(select(User).where(User.username == username)):
-            raise ValueError('That username is already taken.')
+            raise ValueError("That username is already taken.")
         if email and db.scalar(select(User).where(User.email == email)):
-            raise ValueError('That email is already registered.')
+            raise ValueError("That email is already registered.")
         user = User(
             username=username,
             email=email,
             full_name=full_name,
             designation=designation,
-            role='user',
+            role="user",
             password_hash=hash_password(password),
             must_change_password=False,
             is_active=True,
         )
         db.add(user)
         db.flush()
-        db.add(AuditLog(
-            user_id=user.id,
-            action='register',
-            entity_type='user',
-            entity_id=str(user.id),
-            details='self-registration',
-        ))
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action="register",
+                entity_type="user",
+                entity_id=str(user.id),
+                details="self-registration",
+            )
+        )
         db.commit()
         return True
 
@@ -109,14 +207,17 @@ def _require_superadmin(actor_role: str | None) -> None:
         raise PermissionError("Only a superadmin can do that.")
 
 
-def admin_set_password(target_user_id: int, new_password: str, actor_id: int, actor_role: str | None = None) -> None:
+def admin_set_password(
+    target_user_id: int, new_password: str, actor_id: int, actor_role: str | None = None
+) -> None:
     """Superadmin sets a temporary password; user must change on next login."""
     from services.rate_limit import limit_admin_action
+
     _require_superadmin(actor_role)
     limit_admin_action(actor_id)
-    from utils.validators import valid_password
-    from services.session_service import revoke_user_sessions
     from services.rate_limit import limit_password_change
+    from services.session_service import revoke_user_sessions
+    from utils.validators import valid_password
 
     if not valid_password(new_password or ""):
         raise ValueError("Password must be at least 8 characters.")
@@ -133,13 +234,15 @@ def admin_set_password(target_user_id: int, new_password: str, actor_id: int, ac
         target.password_hash = hash_password(new_password)
         target.must_change_password = True
         target.is_active = True
-        db.add(AuditLog(
-            user_id=actor_id,
-            action="admin_set_password",
-            entity_type="user",
-            entity_id=str(target.id),
-            details=target.username,
-        ))
+        db.add(
+            AuditLog(
+                user_id=actor_id,
+                action="admin_set_password",
+                entity_type="user",
+                entity_id=str(target.id),
+                details=target.username,
+            )
+        )
         db.commit()
     unlock_login(target.username)
     # Force re-auth after password reset
@@ -155,8 +258,10 @@ def unlock_account(identity: str, actor_role: str | None) -> int:
 
 def unlock_login(identity: str) -> int:
     """Clear recent failed login attempts so the account is no longer locked."""
-    from database import LoginAttempt
     from sqlalchemy import delete as sa_delete
+
+    from database import LoginAttempt
+
     ident = (identity or "").strip().lower()
     if not ident:
         return 0
@@ -169,7 +274,9 @@ def unlock_login(identity: str) -> int:
         return result.rowcount or 0
 
 
-def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = None) -> None:
+def delete_user(
+    target_user_id: int, actor_id: int, actor_role: str | None = None
+) -> None:
     """Delete a user account while preserving audit history.
 
     Only a superadmin may call this (checked here, not only in the UI).
@@ -179,28 +286,31 @@ def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = Non
     - User row deleted
     """
     from services.rate_limit import limit_admin_action
+
     _require_superadmin(actor_role)
     limit_admin_action(actor_id)
-    from sqlalchemy import delete as sa_delete, update as sa_update
+    from sqlalchemy import delete as sa_delete
+    from sqlalchemy import update as sa_update
+
     from database import (
-        AuditLog,
-        LoginAttempt,
-        PasswordResetToken,
-        UserInvitation,
-        UserAuthIdentity,
         AppSession,
+        AuditLog,
+        BulkPostLog,
+        LoginAttempt,
         OAuthTransaction,
-        UserPreference,
+        PasswordResetToken,
+        UserAuthIdentity,
+        UserConfluenceCredential,
         UserFavorite,
+        UserInvitation,
+        UserJiraCredential,
+        UserNotificationState,
         UserPinnedProject,
+        UserPreference,
+        UserProjectAccess,
+        UserProjectDesignation,
         UserRecentResponse,
         UserSavedSearch,
-        UserNotificationState,
-        UserProjectDesignation,
-        UserProjectAccess,
-        UserJiraCredential,
-        UserConfluenceCredential,
-        BulkPostLog,
     )
     from services.session_service import revoke_user_sessions
 
@@ -217,11 +327,18 @@ def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = Non
         if target.role == "superadmin":
             # Prevent deleting the last superadmin
             from sqlalchemy import func
-            n = db.scalar(
-                select(func.count()).select_from(User).where(
-                    User.role == "superadmin", User.is_active == True  # noqa: E712
+
+            n = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(User)
+                    .where(
+                        User.role == "superadmin",
+                        User.is_active == True,  # noqa: E712
+                    )
                 )
-            ) or 0
+                or 0
+            )
             if n <= 1:
                 raise ValueError("Cannot delete the last active superadmin.")
         # Revoke sessions before hard-delete so tokens cannot be reused
@@ -253,19 +370,24 @@ def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = Non
             log_ignored(__name__)
         try:
             from database import Announcement, MaintenanceWindow
+
             for Model, col in (
                 (Announcement, "created_by"),
                 (MaintenanceWindow, "created_by"),
             ):
                 if hasattr(Model, col):
                     db.execute(
-                        sa_update(Model).where(getattr(Model, col) == uid).values(**{col: None})
+                        sa_update(Model)
+                        .where(getattr(Model, col) == uid)
+                        .values(**{col: None})
                     )
         except Exception:
             log_ignored(__name__)
         try:
             db.execute(
-                sa_update(BulkPostLog).where(BulkPostLog.user_id == uid).values(user_id=None)
+                sa_update(BulkPostLog)
+                .where(BulkPostLog.user_id == uid)
+                .values(user_id=None)
             )
         except Exception:
             log_ignored(__name__)
@@ -293,20 +415,29 @@ def delete_user(target_user_id: int, actor_id: int, actor_role: str | None = Non
 
         try:
             from database import UserSnipeITCredential
-            db.execute(sa_delete(UserSnipeITCredential).where(UserSnipeITCredential.user_id == uid))
+
+            db.execute(
+                sa_delete(UserSnipeITCredential).where(
+                    UserSnipeITCredential.user_id == uid
+                )
+            )
         except Exception:
             log_ignored(__name__)
 
         # Login attempts by username
-        db.execute(sa_delete(LoginAttempt).where(LoginAttempt.identity == username.lower()))
+        db.execute(
+            sa_delete(LoginAttempt).where(LoginAttempt.identity == username.lower())
+        )
 
-        db.add(AuditLog(
-            user_id=actor_id,
-            action="delete_user",
-            entity_type="user",
-            entity_id=str(uid),
-            details=f"deleted username={username}",
-        ))
+        db.add(
+            AuditLog(
+                user_id=actor_id,
+                action="delete_user",
+                entity_type="user",
+                entity_id=str(uid),
+                details=f"deleted username={username}",
+            )
+        )
         db.delete(target)
         db.commit()
 
@@ -343,7 +474,9 @@ def admin_update_user(
         if email is not None:
             email = email.strip().lower() or None
             if email:
-                other = db.scalar(select(User).where(User.email == email, User.id != target_id))
+                other = db.scalar(
+                    select(User).where(User.email == email, User.id != target_id)
+                )
                 if other:
                     raise ValueError("That email is already in use.")
             target.email = email
@@ -356,11 +489,18 @@ def admin_update_user(
                 raise ValueError("Only a superadmin can assign privileged roles.")
             if target.role == "superadmin" and role != "superadmin":
                 from sqlalchemy import func
-                n = db.scalar(
-                    select(func.count()).select_from(User).where(
-                        User.role == "superadmin", User.is_active == True  # noqa: E712
+
+                n = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(User)
+                        .where(
+                            User.role == "superadmin",
+                            User.is_active == True,  # noqa: E712
+                        )
                     )
-                ) or 0
+                    or 0
+                )
                 if n <= 1:
                     raise ValueError("Cannot demote the last active superadmin.")
             if role != target.role:
@@ -372,13 +512,15 @@ def admin_update_user(
             if bool(is_active) != bool(target.is_active):
                 must_revoke = True
             target.is_active = bool(is_active)
-        db.add(AuditLog(
-            user_id=actor_id,
-            action="admin_update_user",
-            entity_type="user",
-            entity_id=str(target_id),
-            details=target.username,
-        ))
+        db.add(
+            AuditLog(
+                user_id=actor_id,
+                action="admin_update_user",
+                entity_type="user",
+                entity_id=str(target_id),
+                details=target.username,
+            )
+        )
         db.commit()
     if must_revoke:
         # Demotion, deactivation or role change → force re-login

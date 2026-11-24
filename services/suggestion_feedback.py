@@ -1,4 +1,5 @@
 """Thumbs up/down feedback on library suggestions shown in the Jira dialog."""
+
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,5 @@
 """Searchable library of approved resolution notes (with optional Confluence link)."""
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,10 @@ class ResolutionNote(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     title: Mapped[str] = mapped_column(String(240), default="")
     notes: Mapped[str] = mapped_column(Text, default="")

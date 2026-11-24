@@ -4,6 +4,7 @@ Loads from environment (and .env in development). All values have safe
 defaults for development; production-critical values are validated and
 emit warnings (or raise) if misconfigured.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,6 @@ import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
-
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +83,13 @@ def _csv_env(name: str, *, strip_at: bool = False) -> tuple[str, ...]:
 # App identity
 # --------------------------------------------------------------------------- #
 APP_NAME = "Jira Support Library"
-APP_VERSION = "2.2.0"
-APP_BUILD_LABEL = "2026-10-29 · Dashboard · Avatars · Multi-step Jira"
+APP_VERSION = "2.6.0"
+APP_BUILD_LABEL = "2026-11-23 · Passkeys · App bar · Role-based admin"
 
 _raw_root = os.getenv("APP_ROOT_PATH", "").strip().strip("/")
 APP_ROOT_PATH = _raw_root
 if APP_ROOT_PATH:
-    os.environ.setdefault(
-        "STREAMLIT_SERVER_BASE_URL_PATH", f"/{APP_ROOT_PATH}"
-    )
+    os.environ.setdefault("STREAMLIT_SERVER_BASE_URL_PATH", f"/{APP_ROOT_PATH}")
 
 _default_app_url = "http://localhost:8501" + (
     f"/{APP_ROOT_PATH}" if APP_ROOT_PATH else ""
@@ -128,6 +126,8 @@ if not _raw_secret:
         _raw_secret = "development-only-change-me"
 APP_SECRET_KEY = _raw_secret
 
+# Public "Create an account" screen. Off by default in production (use invitations instead).
+ALLOW_SELF_REGISTRATION = _bool_env("ALLOW_SELF_REGISTRATION", not IS_PRODUCTION)
 ALLOW_DEFAULT_BOOTSTRAP_ADMIN = _bool_env(
     "ALLOW_DEFAULT_BOOTSTRAP_ADMIN", not IS_PRODUCTION
 )
@@ -136,8 +136,13 @@ BOOTSTRAP_ADMIN_USERNAME = (
     os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin").strip() or "admin"
 )
 
-SESSION_TIMEOUT_MINUTES = _int_env("SESSION_TIMEOUT_MINUTES", 60, min_value=0)  # 0 = no idle timeout
+SESSION_TIMEOUT_MINUTES = _int_env(
+    "SESSION_TIMEOUT_MINUTES", 60, min_value=0
+)  # 0 = no idle timeout
 SESSION_ABSOLUTE_HOURS = _int_env("SESSION_ABSOLUTE_HOURS", 12, min_value=1)
+# "Remember me" on the sign-in page: longer absolute lifetime, optional separate idle timeout (0 = none).
+REMEMBER_ME_DAYS = _int_env("REMEMBER_ME_DAYS", 30, min_value=1)
+REMEMBER_ME_IDLE_TIMEOUT_MINUTES = _int_env("REMEMBER_ME_IDLE_TIMEOUT_MINUTES", 0, min_value=0)
 
 LOGIN_MAX_FAILURES = _int_env("LOGIN_MAX_FAILURES", 5, min_value=1)
 LOGIN_LOCK_MINUTES = _int_env("LOGIN_LOCK_MINUTES", 15, min_value=1)
@@ -167,9 +172,7 @@ if _raw_role_map:
     try:
         MS_APP_ROLE_MAP: dict[str, str] = json.loads(_raw_role_map)
     except json.JSONDecodeError:
-        warnings.warn(
-            "MS_APP_ROLE_MAP is not valid JSON; ignoring.", stacklevel=2
-        )
+        warnings.warn("MS_APP_ROLE_MAP is not valid JSON; ignoring.", stacklevel=2)
         MS_APP_ROLE_MAP = {}
 else:
     MS_APP_ROLE_MAP = {}
@@ -213,9 +216,7 @@ HEALTH_TOKEN = os.getenv("HEALTH_TOKEN", "").strip()
 # --------------------------------------------------------------------------- #
 # Backups
 # --------------------------------------------------------------------------- #
-BACKUP_DIR = str(
-    Path(os.getenv("BACKUP_DIR", str(BASE_DIR / "backups"))).expanduser()
-)
+BACKUP_DIR = str(Path(os.getenv("BACKUP_DIR", str(BASE_DIR / "backups"))).expanduser())
 BACKUP_RETENTION_DAYS = _int_env("BACKUP_RETENTION_DAYS", 30, min_value=1)
 
 
@@ -231,7 +232,7 @@ def validate_production_settings() -> None:
     if not _fernet:
         raise RuntimeError(
             "FERNET_KEY must be set in production (encrypts Jira/SMTP secrets). "
-            "Generate: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            'Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
         )
     if APP_URL.startswith("http://") and "localhost" not in APP_URL:
         warnings.warn(
@@ -241,10 +242,15 @@ def validate_production_settings() -> None:
     if os.getenv("ALLOW_URL_SESSION", "").strip().lower() in ("1", "true", "yes"):
         raise RuntimeError("ALLOW_URL_SESSION must be disabled in production.")
     if os.getenv("ALLOW_SEED_DATA", "").strip().lower() in ("1", "true", "yes"):
-        warnings.warn("ALLOW_SEED_DATA is enabled in production — disable after bootstrap.", stacklevel=2)
+        warnings.warn(
+            "ALLOW_SEED_DATA is enabled in production — disable after bootstrap.",
+            stacklevel=2,
+        )
     _db = os.getenv("DATABASE_URL", "") or os.getenv("POSTGRES_PASSWORD", "")
     if "StrongPassword123" in _db or "CHANGE_ME" in _db:
-        raise RuntimeError("Default/placeholder database password detected — set a strong POSTGRES_PASSWORD.")
+        raise RuntimeError(
+            "Default/placeholder database password detected — set a strong POSTGRES_PASSWORD."
+        )
 
 
 def log_config_summary() -> None:

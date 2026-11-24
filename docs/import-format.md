@@ -1,18 +1,22 @@
 # Project import / export format
 
 Projects are imported from the project page (**Import from JSON**, admins only) and exported with **Export**.
-The repository ships **no data**: create your projects in *Admin Settings → Content & users*, then import or add responses.
+The repository ships **no data**: create your projects in _Admin Settings → Content & users_, then import or add responses.
 
 ```json
 {
   "schema_version": 1,
-  "project": {"key": "KEY", "name": "Project name"},
+  "project": { "key": "KEY", "name": "Project name" },
   "categories": [
     {
       "name": "Category name",
       "responses": [
-        {"title": "Response title", "badge": "LABEL", "preview": "Short summary",
-         "response_body": "Hello @R,\n\nText of the response.\n\nBest regards,\n@NAME"}
+        {
+          "title": "Response title",
+          "badge": "LABEL",
+          "preview": "Short summary",
+          "response_body": "Hello @R,\n\nText of the response.\n\nBest regards,\n@NAME"
+        }
       ]
     }
   ]

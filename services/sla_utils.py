@@ -1,4 +1,5 @@
 """SLA / ageing badges from Jira issue timestamps (no extra Jira config)."""
+
 from __future__ import annotations
 
 from datetime import date, datetime, timezone

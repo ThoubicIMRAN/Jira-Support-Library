@@ -4,6 +4,7 @@ Usage (Docker):
   docker compose exec app python scripts/reset_admin_password.py
   docker compose exec app python scripts/reset_admin_password.py 'YourNewPass1!'
 """
+
 from __future__ import annotations
 
 import os
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import select  # noqa: E402
+
 from auth import hash_password  # noqa: E402
 from database import SessionLocal, User, init_db  # noqa: E402
 

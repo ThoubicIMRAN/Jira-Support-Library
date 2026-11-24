@@ -1,10 +1,17 @@
 import secrets
 from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
-from utils.timeutil import as_utc
-from database import SessionLocal, AppSession
+
+from config import (
+    REMEMBER_ME_DAYS,
+    REMEMBER_ME_IDLE_TIMEOUT_MINUTES,
+    SESSION_ABSOLUTE_HOURS,
+    SESSION_TIMEOUT_MINUTES,
+)
+from database import AppSession, SessionLocal
 from utils.security import token_hash
-from config import SESSION_TIMEOUT_MINUTES, SESSION_ABSOLUTE_HOURS
+from utils.timeutil import as_utc
 
 TOUCH_INTERVAL_SECONDS = 60
 
@@ -13,9 +20,11 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
-def create_session(user_id, auth_method="local"):
+def create_session(user_id, auth_method="local", remember=False):
+    """Create a session. ``remember`` uses REMEMBER_ME_DAYS instead of SESSION_ABSOLUTE_HOURS."""
     raw = secrets.token_urlsafe(40)
     now = utcnow()
+    lifetime = timedelta(days=REMEMBER_ME_DAYS) if remember else timedelta(hours=SESSION_ABSOLUTE_HOURS)
     with SessionLocal() as db:
         db.add(
             AppSession(
@@ -24,7 +33,7 @@ def create_session(user_id, auth_method="local"):
                 auth_method=auth_method,
                 created_at=now,
                 last_seen_at=now,
-                expires_at=now + timedelta(hours=SESSION_ABSOLUTE_HOURS),
+                expires_at=now + lifetime,
             )
         )
         db.commit()
@@ -53,9 +62,13 @@ def validate_session(raw):
 
         last_seen = as_utc(row.last_seen_at)
 
+        # A remembered session is one whose lifetime exceeds the normal absolute limit.
+        remembered = (expires - as_utc(row.created_at)) > timedelta(hours=SESSION_ABSOLUTE_HOURS)
+        idle_minutes = REMEMBER_ME_IDLE_TIMEOUT_MINUTES if remembered else SESSION_TIMEOUT_MINUTES
+
         # 0 = disable idle timeout; only absolute expiry applies
-        if SESSION_TIMEOUT_MINUTES > 0:
-            if last_seen + timedelta(minutes=SESSION_TIMEOUT_MINUTES) <= now:
+        if idle_minutes > 0:
+            if last_seen + timedelta(minutes=idle_minutes) <= now:
                 return None
 
         # Avoid a database write on every Streamlit widget rerun
