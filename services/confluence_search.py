@@ -1,4 +1,5 @@
 """Search Confluence pages via CQL for resolution notes picker."""
+
 from __future__ import annotations
 
 import logging
@@ -53,9 +54,13 @@ def search_pages(user_id: int, query: str, *, limit: int = 10) -> list[dict[str,
     data = resp.json() if resp.content else {}
     results = []
     for r in data.get("results") or []:
-        links = (r.get("_links") or {})
+        links = r.get("_links") or {}
         webui = links.get("webui") or ""
-        page_url = f"{base}{webui}" if webui.startswith("/") else (webui or f"{base}/pages/{r.get('id')}")
+        page_url = (
+            f"{base}{webui}"
+            if webui.startswith("/")
+            else (webui or f"{base}/pages/{r.get('id')}")
+        )
         results.append(
             {
                 "id": str(r.get("id") or ""),

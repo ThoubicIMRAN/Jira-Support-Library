@@ -1,10 +1,11 @@
 """Jira dialog actions: idempotent comments, retry-safe steps, safe errors, file checks."""
+
 import types
 
 import pytest
+from conftest import PASSWORD
 from sqlalchemy import select
 
-from conftest import PASSWORD
 from database import AuditLog, SessionLocal, User
 from services import jira_post_flow as flow
 from services import jira_service as js
@@ -26,14 +27,30 @@ class FakeClient:
             raise exc
         return {}
 
-    def add_comment(self, key, body, *a, **k): return self._go("add_comment", key, body, **k)
-    def add_watcher(self, key, ident): return self._go("add_watcher", key, ident)
-    def add_attachment(self, key, name, data, mime=None): return self._go("add_attachment", key, name)
-    def add_worklog(self, key, **k): return self._go("add_worklog", key, **k)
-    def do_transition(self, key, tid): return self._go("do_transition", key, tid)
-    def list_transitions(self, key): return [{"id": "11", "name": "To Do"}, {"id": "21", "name": "Doing"}, {"id": "31", "name": "Done"}]
+    def add_comment(self, key, body, *a, **k):
+        return self._go("add_comment", key, body, **k)
 
-    def names(self): return [c[0] for c in self.calls]
+    def add_watcher(self, key, ident):
+        return self._go("add_watcher", key, ident)
+
+    def add_attachment(self, key, name, data, mime=None):
+        return self._go("add_attachment", key, name)
+
+    def add_worklog(self, key, **k):
+        return self._go("add_worklog", key, **k)
+
+    def do_transition(self, key, tid):
+        return self._go("do_transition", key, tid)
+
+    def list_transitions(self, key):
+        return [
+            {"id": "11", "name": "To Do"},
+            {"id": "21", "name": "Doing"},
+            {"id": "31", "name": "Done"},
+        ]
+
+    def names(self):
+        return [c[0] for c in self.calls]
 
 
 @pytest.fixture
@@ -43,7 +60,13 @@ def uid():
     with SessionLocal() as db:
         row = db.scalar(select(User).where(User.username == "flow_user"))
         if not row:
-            row = User(username="flow_user", full_name="Flow", role="user", password_hash=hash_password(PASSWORD), must_change_password=False)
+            row = User(
+                username="flow_user",
+                full_name="Flow",
+                role="user",
+                password_hash=hash_password(PASSWORD),
+                must_change_password=False,
+            )
             db.add(row)
             db.commit()
             db.refresh(row)
@@ -66,9 +89,13 @@ def test_add_comment_accepts_an_idempotency_key_and_posts_once(uid, monkeypatch)
     client = FakeClient()
     _use(monkeypatch, client)
     assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="abc") is True
-    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="abc") is False       # duplicate click
+    assert (
+        js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="abc") is False
+    )  # duplicate click
     assert client.names().count("add_comment") == 1
-    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="other") is True       # new key posts
+    assert (
+        js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="other") is True
+    )  # new key posts
 
 
 def test_a_failed_comment_can_be_retried_with_the_same_key(uid, monkeypatch):
@@ -76,7 +103,9 @@ def test_a_failed_comment_can_be_retried_with_the_same_key(uid, monkeypatch):
     _use(monkeypatch, client)
     with pytest.raises(JiraError):
         js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="retry")
-    assert js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="retry") is True       # key was not burned
+    assert (
+        js.add_comment(uid, "PROJ-1", "Hi", idempotency_key="retry") is True
+    )  # key was not burned
     assert client.names().count("add_comment") == 2
 
 
@@ -92,41 +121,69 @@ def test_comment_without_key_is_never_deduplicated(uid, monkeypatch):
 def test_all_steps_run_in_a_fixed_order(uid, monkeypatch):
     client = FakeClient()
     _use(monkeypatch, client)
-    out = _run(uid, set(), watchers=["a.rao", "@b.lee"], files=[("a.png", b"\x89PNG\r\n\x1a\n" + b"0" * 20, "image/png")], time_raw="15m",
-               chain=[("11", "To Do"), ("21", "Doing")])
+    out = _run(
+        uid,
+        set(),
+        watchers=["a.rao", "@b.lee"],
+        files=[("a.png", b"\x89PNG\r\n\x1a\n" + b"0" * 20, "image/png")],
+        time_raw="15m",
+        chain=[("11", "To Do"), ("21", "Doing")],
+    )
     assert out.ok and not out.errors
-    assert client.names() == ["add_comment", "add_watcher", "add_watcher", "add_attachment", "add_worklog",
-                              "do_transition", "do_transition"]
+    assert client.names() == [
+        "add_comment",
+        "add_watcher",
+        "add_watcher",
+        "add_attachment",
+        "add_worklog",
+        "do_transition",
+        "do_transition",
+    ]
 
 
 def test_partial_failure_retry_does_not_repeat_finished_steps(uid, monkeypatch):
-    client = FakeClient(fail={"add_worklog": JiraError("Time tracking is disabled")}, once={"add_worklog"})
+    client = FakeClient(
+        fail={"add_worklog": JiraError("Time tracking is disabled")},
+        once={"add_worklog"},
+    )
     _use(monkeypatch, client)
     done = set()
     first = _run(uid, done, time_raw="15m", chain=[("11", "To Do")])
-    assert any("Time" in e for e in first.errors) and "comment" in done and "time" not in done
+    assert (
+        any("Time" in e for e in first.errors)
+        and "comment" in done
+        and "time" not in done
+    )
     second = _run(uid, done, time_raw="15m", chain=[("11", "To Do")])
     assert not second.errors
-    assert client.names().count("add_comment") == 1            # no second comment
-    assert client.names().count("add_worklog") == 2            # only the failed step retried
-    assert client.names().count("do_transition") == 1          # transition ran once, not twice
+    assert client.names().count("add_comment") == 1  # no second comment
+    assert client.names().count("add_worklog") == 2  # only the failed step retried
+    assert client.names().count("do_transition") == 1  # transition ran once, not twice
 
 
 def test_status_chain_stops_at_the_first_failure_and_resumes_there(uid, monkeypatch):
-    client = FakeClient(fail={"do_transition": JiraError("not allowed")}, once={"do_transition"})
+    client = FakeClient(
+        fail={"do_transition": JiraError("not allowed")}, once={"do_transition"}
+    )
     _use(monkeypatch, client)
     done = set()
     chain = [("11", "To Do"), ("21", "Doing"), ("31", "Done")]
     first = _run(uid, done, chain=chain)
-    assert len(first.errors) == 1 and client.names().count("do_transition") == 1   # stopped at step 1
+    assert (
+        len(first.errors) == 1 and client.names().count("do_transition") == 1
+    )  # stopped at step 1
     second = _run(uid, done, chain=chain)
     assert not second.errors
-    assert client.names().count("do_transition") == 4          # 1 failed + 3 successful, none repeated
+    assert (
+        client.names().count("do_transition") == 4
+    )  # 1 failed + 3 successful, none repeated
     assert {"transition:0:11", "transition:1:21", "transition:2:31"} <= done
 
 
 def test_unexpected_errors_never_leak_internal_details(uid, monkeypatch):
-    client = FakeClient(fail={"add_comment": RuntimeError("secret https://jira.corp.example token=abc")})
+    client = FakeClient(
+        fail={"add_comment": RuntimeError("secret https://jira.corp.example token=abc")}
+    )
     _use(monkeypatch, client)
     out = _run(uid, set())
     joined = " ".join(out.errors)
@@ -134,7 +191,9 @@ def test_unexpected_errors_never_leak_internal_details(uid, monkeypatch):
 
 
 def test_jira_validation_messages_are_shown_to_the_user(uid, monkeypatch):
-    client = FakeClient(fail={"add_comment": JiraError("Jira API 403: no permission to comment")})
+    client = FakeClient(
+        fail={"add_comment": JiraError("Jira API 403: no permission to comment")}
+    )
     _use(monkeypatch, client)
     out = _run(uid, set())
     assert any("403" in e for e in out.errors)
@@ -142,15 +201,30 @@ def test_jira_validation_messages_are_shown_to_the_user(uid, monkeypatch):
 
 # --------------------------------------------------------------------- resolution notes
 def test_draft_resolution_notes_honours_use_ai(monkeypatch):
-    from services import ai_service, resolution_notes_service as rn
+    from services import ai_service
+    from services import resolution_notes_service as rn
 
-    monkeypatch.setattr(rn, "fetch_page_for_user", lambda uid, url: {"title": "VPN fix", "excerpt": "Reset the profile.", "link": "https://wiki.example/x"})
+    monkeypatch.setattr(
+        rn,
+        "fetch_page_for_user",
+        lambda uid, url: {
+            "title": "VPN fix",
+            "excerpt": "Reset the profile.",
+            "link": "https://wiki.example/x",
+        },
+    )
 
     def boom():
         raise AssertionError("AI must not be contacted when use_ai=False")
 
     monkeypatch.setattr(ai_service, "ollama_available", boom)
-    text = rn.draft_resolution_notes(user_id=1, confluence_url="https://wiki.example/x", ticket_key="PROJ-1", ticket_summary="VPN", use_ai=False)
+    text = rn.draft_resolution_notes(
+        user_id=1,
+        confluence_url="https://wiki.example/x",
+        ticket_key="PROJ-1",
+        ticket_summary="VPN",
+        use_ai=False,
+    )
     assert "https://wiki.example/x" in text
 
 
@@ -162,10 +236,21 @@ def _upload(name, data, mime):
 def test_prepare_files_accepts_good_files_and_reports_bad_ones():
     from views.jira_action_dialog import _prepare_files
 
-    files, problems = _prepare_files([_upload("ok.png", b"x" * 10, "image/png"), _upload("bad.exe", b"MZ", "application/x-msdownload"),
-                                      _upload("big.pdf", b"x" * (11 * 1024 * 1024), "application/pdf")], "", "PROJ-1")
+    files, problems = _prepare_files(
+        [
+            _upload("ok.png", b"x" * 10, "image/png"),
+            _upload("bad.exe", b"MZ", "application/x-msdownload"),
+            _upload("big.pdf", b"x" * (11 * 1024 * 1024), "application/pdf"),
+        ],
+        "",
+        "PROJ-1",
+    )
     assert [f[0] for f in files] == ["ok.png"]
-    assert len(problems) == 2 and any("exe" in p for p in problems) and any("larger" in p for p in problems)
+    assert (
+        len(problems) == 2
+        and any("exe" in p for p in problems)
+        and any("larger" in p for p in problems)
+    )
 
 
 def test_prepare_files_rejects_non_image_paste():
@@ -179,9 +264,17 @@ def test_dialog_has_no_bulk_posting_and_never_calls_rerun():
     import ast
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "views" / "jira_action_dialog.py").read_text(encoding="utf-8")
-    assert "bulk" not in src.lower(), "bulk posting belongs on the project page, not in the single-ticket dialog"
-    reruns = [n.lineno for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rerun"]
+    src = (
+        Path(__file__).resolve().parents[1] / "views" / "jira_action_dialog.py"
+    ).read_text(encoding="utf-8")
+    assert "bulk" not in src.lower(), (
+        "bulk posting belongs on the project page, not in the single-ticket dialog"
+    )
+    reruns = [
+        n.lineno
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rerun"
+    ]
     assert not reruns, f"st.rerun() inside a dialog closes it (lines {reruns})"
     assert 'width="medium"' in src
 
@@ -196,7 +289,12 @@ def test_failed_steps_are_not_marked_with_a_tick(uid, monkeypatch):
 def test_settings_page_no_longer_references_a_missing_module():
     from pathlib import Path
 
-    assert "snipeit" not in (Path(__file__).resolve().parents[1] / "views" / "settings.py").read_text(encoding="utf-8").lower()
+    assert (
+        "snipeit"
+        not in (Path(__file__).resolve().parents[1] / "views" / "settings.py")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
 
 
 def test_audit_trail_records_the_posted_comment(uid, monkeypatch):
@@ -204,5 +302,218 @@ def test_audit_trail_records_the_posted_comment(uid, monkeypatch):
     _use(monkeypatch, client)
     js.add_comment(uid, "AUD-1", "audited body", idempotency_key="aud")
     with SessionLocal() as db:
-        row = db.scalar(select(AuditLog).where(AuditLog.entity_id == "AUD-1", AuditLog.action == "jira_comment"))
+        row = db.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_id == "AUD-1", AuditLog.action == "jira_comment"
+            )
+        )
     assert row is not None
+
+
+# --------------------------------------------------------------------- independent action selection
+@pytest.fixture
+def isolated_jira_actions(monkeypatch):
+    calls = []
+
+    def add_comment(user_id, issue_key, body, **kwargs):
+        calls.append(("comment", body))
+        return True
+
+    def log_work(user_id, issue_key, raw):
+        calls.append(("worklog", raw))
+        return raw
+
+    def transition(user_id, issue_key, ids, labels=None):
+        calls.append(("transition", tuple(ids), tuple(labels or [])))
+        return True
+
+    monkeypatch.setattr(js, "add_comment", add_comment)
+    monkeypatch.setattr(js, "log_work", log_work)
+    monkeypatch.setattr(js, "multi_step_transition", transition)
+    return calls
+
+
+def test_comment_only_action(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7, "PROJ-1", comment="Hello", internal=False, idempotency_key="c1", done=set()
+    )
+    assert out.ok and isolated_jira_actions == [("comment", "Hello")]
+
+
+def test_worklog_only_action(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="w1",
+        done=set(),
+        time_raw="15m",
+    )
+    assert out.ok and isolated_jira_actions == [("worklog", "15m")]
+
+
+def test_transition_only_action(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="t1",
+        done=set(),
+        chain=[("11", "To Do")],
+    )
+    assert out.ok and isolated_jira_actions == [("transition", ("11",), ("To Do",))]
+
+
+def test_worklog_and_transition_without_comment(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="wt1",
+        done=set(),
+        time_raw="30m",
+        chain=[("11", "To Do")],
+    )
+    assert out.ok
+    assert [c[0] for c in isolated_jira_actions] == ["worklog", "transition"]
+
+
+def test_empty_comment_does_not_block_worklog(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="  ",
+        internal=False,
+        idempotency_key="w2",
+        done=set(),
+        time_raw="1h",
+    )
+    assert out.ok and isolated_jira_actions == [("worklog", "1h")]
+
+
+def test_empty_comment_does_not_block_transition(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="t2",
+        done=set(),
+        chain=[("11", "To Do")],
+    )
+    assert out.ok and isolated_jira_actions[0][0] == "transition"
+
+
+def test_all_actions_empty_is_rejected(isolated_jira_actions):
+    out = flow.run_post_steps(
+        7, "PROJ-1", comment="", internal=False, idempotency_key="empty", done=set()
+    )
+    assert not out.ok and not out.results
+    assert any("at least one" in error.lower() for error in out.errors)
+    assert isolated_jira_actions == []
+
+
+def test_comment_failure_does_not_block_worklog_and_retry_skips_worklog(monkeypatch):
+    calls = []
+    comment_attempts = {"count": 0}
+
+    def add_comment(*args, **kwargs):
+        calls.append("comment")
+        comment_attempts["count"] += 1
+        if comment_attempts["count"] == 1:
+            raise JiraError("comment unavailable")
+        return True
+
+    def log_work(*args, **kwargs):
+        calls.append("worklog")
+        return "15m"
+
+    monkeypatch.setattr(js, "add_comment", add_comment)
+    monkeypatch.setattr(js, "log_work", log_work)
+    done = set()
+    first = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="Hello",
+        internal=False,
+        idempotency_key="retry-c",
+        done=done,
+        time_raw="15m",
+    )
+    assert first.errors and "time" in done and "comment" not in done
+    second = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="Hello",
+        internal=False,
+        idempotency_key="retry-c",
+        done=done,
+        time_raw="15m",
+    )
+    assert not second.errors
+    assert calls == ["comment", "worklog", "comment"]
+
+
+def test_transition_failure_after_worklog_does_not_repeat_worklog(monkeypatch):
+    calls = []
+    fail_transition = {"yes": True}
+
+    def log_work(*args, **kwargs):
+        calls.append("worklog")
+        return "15m"
+
+    def transition(*args, **kwargs):
+        calls.append("transition")
+        if fail_transition["yes"]:
+            fail_transition["yes"] = False
+            raise JiraError("transition unavailable")
+        return True
+
+    monkeypatch.setattr(js, "log_work", log_work)
+    monkeypatch.setattr(js, "multi_step_transition", transition)
+    done = set()
+    first = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="retry-t",
+        done=done,
+        time_raw="15m",
+        chain=[("11", "To Do")],
+    )
+    assert first.errors and "time" in done and "transition:0:11" not in done
+    second = flow.run_post_steps(
+        7,
+        "PROJ-1",
+        comment="",
+        internal=False,
+        idempotency_key="retry-t",
+        done=done,
+        time_raw="15m",
+        chain=[("11", "To Do")],
+    )
+    assert not second.errors
+    assert calls == ["worklog", "transition", "transition"]
+
+
+def test_execution_fingerprint_changes_when_action_payload_changes():
+    from services.jira_dialog_safety import execution_fingerprint
+
+    base = dict(
+        issue_key="PROJ-1",
+        comment="Hello",
+        include_comment=True,
+        internal=False,
+        watchers=[],
+        file_fingerprints=[],
+        time_raw="15m",
+        chain=[],
+    )
+    first = execution_fingerprint(**base)
+    changed = dict(base, time_raw="30m")
+    assert execution_fingerprint(**changed) != first
+    assert execution_fingerprint(**base) == first

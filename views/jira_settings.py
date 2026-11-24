@@ -1,7 +1,7 @@
 """Jira + Confluence — matching two-column layout."""
+
 from __future__ import annotations
 
-from utils.errors import safe_message
 import logging
 
 import streamlit as st
@@ -10,6 +10,7 @@ from config import CONFLUENCE_BASE_URL, JIRA_BASE_URL, JIRA_ENABLED, JIRA_PRODUC
 from services import confluence_service, jira_service
 from services.confluence_client import ConfluenceError
 from services.jira_client import JiraError
+from utils.errors import safe_message
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ def render_jira_settings(user) -> None:
             "Product",
             ["cloud", "server"],
             index=0 if (status.get("product") or JIRA_PRODUCT) == "cloud" else 1,
-            format_func=lambda x: "Cloud (email + API token)" if x == "cloud" else "Server / DC (PAT)",
+            format_func=lambda x: (
+                "Cloud (email + API token)" if x == "cloud" else "Server / DC (PAT)"
+            ),
             key="jira_set_product",
         )
         email = ""
@@ -51,7 +54,9 @@ def render_jira_settings(user) -> None:
                 value=status.get("email") or "",
                 key="jira_set_email_server",
             )
-        secret = st.text_input("Personal Access Token / API token", type="password", key="jira_set_secret")
+        secret = st.text_input(
+            "Personal Access Token / API token", type="password", key="jira_set_secret"
+        )
 
         b1, b2 = st.columns(2)
         if b1.button("Save & test", type="primary", key="jira_save_cred"):
@@ -66,7 +71,9 @@ def render_jira_settings(user) -> None:
                             user.id, product=product, email=email or None, secret=secret
                         )
                         st.session_state.pop("jira_set_secret", None)
-                        st.toast(f"Jira connected: {info.get('display_name')}", icon="✅")
+                        st.toast(
+                            f"Jira connected: {info.get('display_name')}", icon="✅"
+                        )
                         st.rerun()
                     except JiraError as exc:
                         st.error(safe_message(exc))

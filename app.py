@@ -8,9 +8,11 @@ Responsibilities:
 
 All navigation goes through ``utils.navigation.goto``.
 """
+
 from __future__ import annotations
 
 import hmac
+import html
 import logging
 import sys
 import time
@@ -24,23 +26,55 @@ import streamlit as st  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from auth import allowed, ensure_superadmin  # noqa: E402
+from components.cards import initials  # noqa: E402
 from config import APP_NAME, HEALTH_TOKEN  # noqa: E402
 from database import Category, Project, SessionLocal, User, init_db  # noqa: E402
 from seed_data import seed_if_empty  # noqa: E402
+from services.avatar_service import get_avatar_data_uri  # noqa: E402
 from services.cookie_service import delete_session_cookie, get_session_cookie  # noqa: E402
 from services.notification_service import unread_count  # noqa: E402
-from services.preference_service import DEFAULTS, get_preferences, preference_css, save_preferences  # noqa: E402
+from services.preference_service import (
+    DEFAULTS,
+    get_preferences,
+    preference_css,
+    save_preferences,
+)  # noqa: E402
 from services.session_service import revoke_session, validate_session  # noqa: E402
 from utils.logging_config import configure_logging, new_correlation_id  # noqa: E402
 from utils.navigation import (  # noqa: E402
-    PAGE_ADMIN, PAGE_ADMIN_SETTINGS, PAGE_AI, PAGE_HEALTH, PAGE_HOME, PAGE_SUPPORT,
-    PAGE_NOTIFICATIONS, PAGE_DASHBOARD, PAGE_WHATS_NEW,
-    PAGE_PROFILE, PAGE_PROJECT, PAGE_SECURITY_ADMIN, PAGE_SETTINGS, PAGE_WORKSPACE, goto,
+    PAGE_ADMIN,
+    PAGE_ADMIN_SETTINGS,
+    PAGE_AI,
+    PAGE_DASHBOARD,
+    PAGE_HEALTH,
+    PAGE_HOME,
+    PAGE_NOTIFICATIONS,
+    PAGE_PROFILE,
+    PAGE_PROJECT,
+    PAGE_SECURITY_ADMIN,
+    PAGE_SETTINGS,
+    PAGE_SUPPORT,
+    PAGE_WHATS_NEW,
+    PAGE_WORKSPACE,
+    goto,
 )
-from views import support  # noqa: F401
 from views import (  # noqa: E402
-    admin_panel, admin_settings, ai_assistant, change_password, health, home, login,
-    my_dashboard, notifications, whats_new, profile, project_view, security_admin, settings, workspace,
+    admin_panel,
+    admin_settings,
+    ai_assistant,
+    change_password,
+    health,
+    home,
+    login,
+    my_dashboard,
+    notifications,
+    profile,
+    project_view,
+    security_admin,
+    settings,
+    support,  # noqa: F401
+    whats_new,
+    workspace,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,9 +119,9 @@ BREADCRUMB_LABELS = {
 
 def _can_open(role: str, page: str) -> bool:
     if page in (PAGE_ADMIN, PAGE_ADMIN_SETTINGS):
-        return allowed(role, "manage_content") or role in ("admin", "superadmin")
+        return allowed(role, "manage_content")
     if page == PAGE_SECURITY_ADMIN:
-        return role in ("admin", "superadmin")
+        return allowed(role, "manage_security")
     return True
 
 
@@ -119,7 +153,11 @@ except Exception:  # noqa: BLE001
     st.stop()
 
 _health_param = st.query_params.get("health")
-if HEALTH_TOKEN and _health_param and hmac.compare_digest(str(_health_param), HEALTH_TOKEN):
+if (
+    HEALTH_TOKEN
+    and _health_param
+    and hmac.compare_digest(str(_health_param), HEALTH_TOKEN)
+):
     health.render()
     st.stop()
 
@@ -208,47 +246,148 @@ if page not in PAGE_RENDERERS or not _can_open(user.role, page):
     page = PAGE_HOME
     st.session_state.page = page
 unread = _safe_unread()
-is_admin_area = allowed(user.role, "manage_content") or user.role in ("admin", "superadmin")
+is_admin_area = allowed(user.role, "manage_content")
+
+
+def _crumb_label() -> str:
+    if page == PAGE_PROJECT and st.session_state.get("project_id") is not None:
+        try:
+            with SessionLocal() as db:
+                project = db.get(Project, st.session_state["project_id"])
+            if project and project.name:
+                return project.name
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not load project name for breadcrumb")
+    return BREADCRUMB_LABELS.get(page, "")
+
+
+def _on_search_change() -> None:
+    st.session_state["_search_to_home"] = True
+
+
+def _render_breadcrumb() -> None:
+    with st.container(key="crumbs"):
+        if page == PAGE_HOME:
+            st.markdown(
+                '<span class="jsl-crumb-now">Home</span>', unsafe_allow_html=True
+            )
+            return
+        if st.button("Home", key="crumb_home", type="tertiary", icon=":material/home:"):
+            goto(PAGE_HOME, clear_project=True)
+        label = html.escape(_crumb_label())
+        st.markdown(
+            f'<span class="jsl-crumb-sep">/</span><span class="jsl-crumb-now" title="{label}">{label}</span>',
+            unsafe_allow_html=True,
+        )
+
+
+def _account_header_html(name: str, contact: str, role: str, src: str | None) -> str:
+    if src:
+        avatar = f'<img class="jsl-acct-avatar" src="{html.escape(src, quote=True)}" alt="Profile photo of {html.escape(name)}" />'
+    else:
+        avatar = f'<div class="jsl-acct-avatar jsl-acct-avatar-fb">{html.escape(initials(name))}</div>'
+    return (
+        f'<div class="jsl-acct-head">{avatar}<div class="jsl-acct-name">{html.escape(name)}</div>'
+        f'<div class="jsl-acct-mail">{html.escape(contact)}</div><div class="jsl-acct-role">{html.escape(role)}</div></div>'
+    )
+
+
+def _topbar_dynamic_css(src: str | None, unread_count_: int) -> str:
+    """Only the per-user bits (photo, badge count) are generated; all styling is in assets/styles.css."""
+    rules = []
+    if src:  # data URIs are base64, so they cannot break out of url("...")
+        rules.append(
+            f'.st-key-top_account [data-testid="stPopover"] button {{ background-image: url("{src}") !important; color: transparent; font-size: 0; }}'
+        )
+    if unread_count_:
+        badge = "9+" if unread_count_ > 9 else str(unread_count_)
+        rules.append(f'.st-key-top_notifications::after {{ content: "{badge}"; }}')
+    return "<style>" + "".join(rules) + "</style>" if rules else ""
 
 
 def _render_top_bar() -> None:
+    name = user.full_name or user.username or "User"
+    contact = getattr(user, "email", None) or user.username or ""
+    src = get_avatar_data_uri(user.id)
+    css = _topbar_dynamic_css(src, unread)
+    if css:
+        st.html(css)
     with st.container(key="topbar"):
-        left, centre, right = st.columns([2.2, 3.6, 2.4], gap="small", vertical_alignment="center")
-        left.markdown(
-            '<div class="jsl-brand"><div class="jsl-brand-logo">🎯</div>'
-            f'<div class="jsl-brand-name">{APP_NAME}<div class="jsl-brand-sub">IT Operations · Enterprise Support Platform</div></div></div>',
-            unsafe_allow_html=True,
+        left, centre, c_bell, c_user = st.columns(
+            [1.3, 2.2, 0.16, 0.16], gap="small", vertical_alignment="center"
         )
+        with left:
+            _render_breadcrumb()
         with centre:
-            if page == PAGE_HOME:
-                st.text_input(
-                    "Search projects", key="global_search", placeholder="🔍  Search projects",
-                    label_visibility="collapsed",
-                )
-            else:
-                label = BREADCRUMB_LABELS.get(page, "")
-                st.markdown(f'<div class="jsl-crumbs">Home / <b>{label}</b></div>', unsafe_allow_html=True)
-        with right:
-            c_bell, c_user = st.columns([1, 1.7], gap="small")
-            if c_bell.button(f"🔔 {unread}" if unread else "🔔", key="top_notifications", width="stretch", help="Notifications"):
+            st.text_input(
+                "Search libraries",
+                key="global_search",
+                placeholder="Search libraries",
+                label_visibility="collapsed",
+                icon=":material/search:",
+                on_change=_on_search_change,
+            )
+        with c_bell:
+            if st.button(
+                "",
+                key="top_notifications",
+                icon=":material/notifications:",
+                help=f"Notifications ({unread} unread)" if unread else "Notifications",
+            ):
                 goto(PAGE_NOTIFICATIONS)
-            with c_user.popover("👤 Account", width="stretch"):
-                st.markdown(f"**{user.full_name}**")
-                st.caption(f"{user.role.title()} · {user.username}")
-                if st.button("Profile", key="nav_profile", width="stretch"):
-                    goto(PAGE_PROFILE)
-                if st.button("Personal settings", key="nav_settings", width="stretch"):
-                    goto(PAGE_SETTINGS)
-                if st.button("Sign out", key="nav_signout", width="stretch"):
-                    _sign_out()
+        with c_user:
+            with st.container(key="top_account"):
+                # With a photo the label is the name (hidden visually, kept for screen readers).
+                with st.popover(name if src else initials(name), width="content"):
+                    st.markdown(
+                        _account_header_html(name, contact, user.role.title(), src),
+                        unsafe_allow_html=True,
+                    )
+                    if st.button(
+                        "Profile",
+                        key="nav_profile",
+                        icon=":material/person:",
+                        width="stretch",
+                    ):
+                        goto(PAGE_PROFILE)
+                    if st.button(
+                        "Personal settings",
+                        key="nav_settings",
+                        icon=":material/settings:",
+                        width="stretch",
+                    ):
+                        goto(PAGE_SETTINGS)
+                    if st.button(
+                        "Sign out",
+                        key="nav_signout",
+                        icon=":material/logout:",
+                        width="stretch",
+                    ):
+                        _sign_out()
+
+    # Searching from any other screen jumps to the library list, where the filter applies.
+    if (
+        st.session_state.pop("_search_to_home", False)
+        and page != PAGE_HOME
+        and st.session_state.get("global_search")
+    ):
+        goto(PAGE_HOME, clear_project=True)
 
 
 _render_top_bar()
 
 
-def _nav_button(label: str, target: str, key: str, **goto_kwargs) -> None:
+def _nav_button(
+    label: str, target: str, key: str, icon: str | None = None, **goto_kwargs
+) -> None:
     active = page == target
-    if st.button(label, key=key, width="stretch", type="primary" if active else "tertiary"):
+    if st.button(
+        label,
+        key=key,
+        icon=icon,
+        width="stretch",
+        type="primary" if active else "tertiary",
+    ):
         goto(target, **goto_kwargs)
 
 
@@ -260,20 +399,35 @@ def _render_project_categories() -> None:
         project = db.get(Project, project_id)
         categories = (
             db.scalars(
-                select(Category).where(Category.project_id == project_id).order_by(Category.sort_order, Category.id)
+                select(Category)
+                .where(Category.project_id == project_id)
+                .order_by(Category.sort_order, Category.id)
             ).all()
             if project and not project.is_deleted
             else []
         )
     if not categories:
         return
-    st.markdown(f'<div class="jsl-sb-label">{project.name}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="jsl-sb-label">{project.name}</div>', unsafe_allow_html=True
+    )
     active_filter = st.session_state.get("category_filter")
-    if st.button("📋 All categories", key="sbcat_all", width="stretch", type="primary" if not active_filter else "tertiary"):
+    if st.button(
+        "All categories",
+        key="sbcat_all",
+        icon=":material/list:",
+        width="stretch",
+        type="primary" if not active_filter else "tertiary",
+    ):
         st.session_state.pop("category_filter", None)
         st.rerun()
     for cat in categories:
-        if st.button(cat.name, key=f"sbcat_{cat.id}", width="stretch", type="primary" if active_filter == cat.id else "tertiary"):
+        if st.button(
+            cat.name,
+            key=f"sbcat_{cat.id}",
+            width="stretch",
+            type="primary" if active_filter == cat.id else "tertiary",
+        ):
             st.session_state.category_filter = cat.id
             st.rerun()
 
@@ -282,35 +436,70 @@ def _render_sidebar() -> None:
     with st.sidebar:
         st.markdown(
             '<div class="jsl-sb-brand"><div class="jsl-brand-logo">🎯</div><div>'
-            f'<div class="jsl-sb-title">{APP_NAME}</div><div class="jsl-sb-sub">Enterprise Support Platform</div></div></div>'
-            f'<div class="jsl-sb-user"><b>{user.full_name}</b> · {user.role}</div>',
+            f'<div class="jsl-sb-title">{APP_NAME}</div><div class="jsl-sb-sub">IT Operations · Enterprise Support Platform</div></div></div>',
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="jsl-sb-label">Command library (Jira)</div>', unsafe_allow_html=True)
-        _nav_button("🏠  Home", PAGE_HOME, "nav_home", clear_project=True)
-        _nav_button("⭐  My Workspace", PAGE_WORKSPACE, "nav_workspace")
-        _nav_button("📊  My Dashboard", PAGE_DASHBOARD, "nav_dashboard", clear_project=True)
-        _nav_button("✨  What's New", PAGE_WHATS_NEW, "nav_whats_new", clear_project=True)
-        _nav_button("🤖  AI Assistant", PAGE_AI, "nav_ai")
+        st.markdown(
+            '<div class="jsl-sb-label">Command library (Jira)</div>',
+            unsafe_allow_html=True,
+        )
+        _nav_button(
+            "Home", PAGE_HOME, "nav_home", ":material/home:", clear_project=True
+        )
+        _nav_button("My Workspace", PAGE_WORKSPACE, "nav_workspace", ":material/star:")
+        _nav_button(
+            "My Dashboard",
+            PAGE_DASHBOARD,
+            "nav_dashboard",
+            ":material/dashboard:",
+            clear_project=True,
+        )
+        _nav_button(
+            "What's New",
+            PAGE_WHATS_NEW,
+            "nav_whats_new",
+            ":material/new_releases:",
+            clear_project=True,
+        )
+        _nav_button("AI Assistant", PAGE_AI, "nav_ai", ":material/smart_toy:")
         st.markdown('<div class="jsl-sb-label">Workspace</div>', unsafe_allow_html=True)
-        _nav_button("💬  Support", PAGE_SUPPORT, "nav_support")
-        _nav_button(f"🔔  Notifications ({unread})" if unread else "🔔  Notifications", PAGE_NOTIFICATIONS, "nav_notifications")
+        _nav_button("Support", PAGE_SUPPORT, "nav_support", ":material/support_agent:")
+        _nav_button(
+            f"Notifications ({unread})" if unread else "Notifications",
+            PAGE_NOTIFICATIONS,
+            "nav_notifications",
+            ":material/notifications:",
+        )
 
         if page == PAGE_PROJECT:
             _render_project_categories()
 
         st.divider()
         is_dark = preferences.get("theme") == "dark"
-        if st.button("☀️  Light mode" if is_dark else "🌙  Dark mode", key="quick_theme_toggle", width="stretch", type="tertiary"):
+        if st.button(
+            "Light mode" if is_dark else "Dark mode",
+            key="quick_theme_toggle",
+            icon=":material/light_mode:" if is_dark else ":material/dark_mode:",
+            width="stretch",
+            type="tertiary",
+        ):
             _toggle_theme()
         if is_admin_area:
-            _nav_button("⚙️  Admin Settings", PAGE_ADMIN_SETTINGS, "nav_admin_settings")
-            if user.role == "superadmin":
-                _nav_button("🩺  Health", PAGE_HEALTH, "nav_health")
+            _nav_button(
+                "Admin Settings",
+                PAGE_ADMIN_SETTINGS,
+                "nav_admin_settings",
+                ":material/settings:",
+            )
+            if allowed(user.role, "view_health"):
+                _nav_button(
+                    "Health", PAGE_HEALTH, "nav_health", ":material/monitor_heart:"
+                )
 
 
 try:
     from services.comms_service import active_maintenance
+
     _m = active_maintenance()
     if _m:
         st.warning(f"**Maintenance:** {_m['title']} — {_m['message']}")

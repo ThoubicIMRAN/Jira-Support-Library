@@ -1,4 +1,5 @@
 """Parse @username mentions and normalize for Jira comments + watchers."""
+
 from __future__ import annotations
 
 import re
@@ -17,7 +18,18 @@ def extract_at_usernames(text: str) -> list[str]:
         if not u or u.lower() in seen:
             continue
         # skip common non-user tokens
-        if u.upper() in ("R", "NAME", "DESIGNATION", "ROLE", "DATE", "TICKET", "SUMMARY", "ASSIGNEE", "PROJECT", "STATUS"):
+        if u.upper() in (
+            "R",
+            "NAME",
+            "DESIGNATION",
+            "ROLE",
+            "DATE",
+            "TICKET",
+            "SUMMARY",
+            "ASSIGNEE",
+            "PROJECT",
+            "STATUS",
+        ):
             continue
         seen.add(u.lower())
         out.append(u)
@@ -29,9 +41,21 @@ def to_jira_wiki_mentions(text: str) -> str:
 
     Leaves @R / @NAME style placeholders alone (handled by personalize).
     """
+
     def repl(m: re.Match) -> str:
         u = m.group(1)
-        if u.upper() in ("R", "NAME", "DESIGNATION", "ROLE", "DATE", "TICKET", "SUMMARY", "ASSIGNEE", "PROJECT", "STATUS"):
+        if u.upper() in (
+            "R",
+            "NAME",
+            "DESIGNATION",
+            "ROLE",
+            "DATE",
+            "TICKET",
+            "SUMMARY",
+            "ASSIGNEE",
+            "PROJECT",
+            "STATUS",
+        ):
             return m.group(0)
         return f"[~{u}]"
 

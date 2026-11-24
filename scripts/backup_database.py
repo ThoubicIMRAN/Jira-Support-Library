@@ -3,6 +3,7 @@
 The connection string is passed to pg_dump through the PGPASSWORD-free
 ``--dbname`` URI and is never printed or logged.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 def main() -> str:
     if not DATABASE_URL.startswith("postgresql"):
-        raise SystemExit("This script targets PostgreSQL. For SQLite, copy the .db file while the app is stopped.")
+        raise SystemExit(
+            "This script targets PostgreSQL. For SQLite, copy the .db file while the app is stopped."
+        )
     pg_dump = shutil.which("pg_dump")
     if not pg_dump:
         raise SystemExit("pg_dump is required for PostgreSQL backups.")
@@ -34,8 +37,19 @@ def main() -> str:
     uri = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1)
 
     subprocess.run(
-        [pg_dump, "--no-owner", "--no-privileges", "--clean", "-d", uri, "-f", str(target)],
-        check=True, capture_output=True, text=True,
+        [
+            pg_dump,
+            "--no-owner",
+            "--no-privileges",
+            "--clean",
+            "-d",
+            uri,
+            "-f",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=BACKUP_RETENTION_DAYS)

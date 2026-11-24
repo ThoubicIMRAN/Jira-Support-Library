@@ -6,6 +6,7 @@ Rules:
 - Only generate + save a NEW response when no good match exists.
 - Safe for concurrent users: one shared Ollama container serves all app workers.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -16,32 +17,32 @@ from datetime import datetime, timezone
 
 import httpx
 import numpy as np
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from config import (
+    AI_REQUEST_TIMEOUT,
+    AI_SIMILARITY_THRESHOLD,
     OLLAMA_BASE,
     OLLAMA_CHAT_MODEL,
     OLLAMA_EMBED_MODEL,
-    AI_SIMILARITY_THRESHOLD,
-    AI_REQUEST_TIMEOUT,
 )
 from database import (
-    SessionLocal,
-    Response,
-    Category,
-    ResponseEmbedding,
     AIGenerationLog,
+    Category,
+    Response,
+    ResponseEmbedding,
+    SessionLocal,
 )
 
 logger = logging.getLogger(__name__)
 
 TONE_INSTRUCTIONS = {
-    'Professional': 'Clear, direct, professional. Short sentences. No filler.',
-    'Friendly': 'Warm and helpful, still concise. No fluff.',
-    'Escalation': 'Firm and urgent. State impact and next step in few lines.',
-    'Customer-facing': 'Speak to the end customer. Polite, plain language, brief.',
-    'Internal Team': 'Internal note. Technical and short.',
+    "Professional": "Clear, direct, professional. Short sentences. No filler.",
+    "Friendly": "Warm and helpful, still concise. No fluff.",
+    "Escalation": "Firm and urgent. State impact and next step in few lines.",
+    "Customer-facing": "Speak to the end customer. Polite, plain language, brief.",
+    "Internal Team": "Internal note. Technical and short.",
 }
 
 STYLE_RULES = """
@@ -70,13 +71,12 @@ Output ONLY the response text — no title, no markdown fences, no commentary.
 """
 
 
-
 def _utcnow():
     return datetime.now(timezone.utc)
 
 
 def _hash_text(text: str) -> str:
-    return hashlib.sha256((text or '').strip().encode('utf-8')).hexdigest()
+    return hashlib.sha256((text or "").strip().encode("utf-8")).hexdigest()
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -89,7 +89,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def ollama_available() -> bool:
     try:
         with httpx.Client(timeout=3.0) as client:
-            r = client.get(f'{OLLAMA_BASE}/api/tags')
+            r = client.get(f"{OLLAMA_BASE}/api/tags")
             return r.status_code == 200
     except Exception:
         return False
@@ -98,9 +98,9 @@ def ollama_available() -> bool:
 def list_models() -> list[str]:
     try:
         with httpx.Client(timeout=5.0) as client:
-            r = client.get(f'{OLLAMA_BASE}/api/tags')
+            r = client.get(f"{OLLAMA_BASE}/api/tags")
             r.raise_for_status()
-            return [m.get('name', '') for m in r.json().get('models', [])]
+            return [m.get("name", "") for m in r.json().get("models", [])]
     except Exception:
         return []
 
@@ -108,32 +108,32 @@ def list_models() -> list[str]:
 def embed(text: str) -> list[float]:
     with httpx.Client(timeout=AI_REQUEST_TIMEOUT) as client:
         r = client.post(
-            f'{OLLAMA_BASE}/api/embeddings',
-            json={'model': OLLAMA_EMBED_MODEL, 'prompt': (text or '')[:8000]},
+            f"{OLLAMA_BASE}/api/embeddings",
+            json={"model": OLLAMA_EMBED_MODEL, "prompt": (text or "")[:8000]},
         )
         r.raise_for_status()
         data = r.json()
-        vec = data.get('embedding')
+        vec = data.get("embedding")
         if not vec:
-            raise RuntimeError(f'Empty embedding from Ollama: {data}')
+            raise RuntimeError(f"Empty embedding from Ollama: {data}")
         return vec
 
 
 def chat(system: str, user: str) -> str:
     with httpx.Client(timeout=AI_REQUEST_TIMEOUT) as client:
         r = client.post(
-            f'{OLLAMA_BASE}/api/chat',
+            f"{OLLAMA_BASE}/api/chat",
             json={
-                'model': OLLAMA_CHAT_MODEL,
-                'stream': False,
-                'messages': [
-                    {'role': 'system', 'content': system},
-                    {'role': 'user', 'content': user},
+                "model": OLLAMA_CHAT_MODEL,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
                 ],
             },
         )
         r.raise_for_status()
-        return (r.json().get('message') or {}).get('content', '').strip()
+        return (r.json().get("message") or {}).get("content", "").strip()
 
 
 def ensure_embedding(db, response: Response) -> list[float]:
@@ -143,14 +143,16 @@ def ensure_embedding(db, response: Response) -> list[float]:
     if row:
         return json.loads(row.embedding_json)
 
-    text = f'{response.title}\n{response.preview or ""}\n{response.response_body}'
+    text = f"{response.title}\n{response.preview or ''}\n{response.response_body}"
     vec = embed(text)
-    db.add(ResponseEmbedding(
-        response_id=response.id,
-        embedding_json=json.dumps(vec),
-        model_name=OLLAMA_EMBED_MODEL,
-        updated_at=_utcnow(),
-    ))
+    db.add(
+        ResponseEmbedding(
+            response_id=response.id,
+            embedding_json=json.dumps(vec),
+            model_name=OLLAMA_EMBED_MODEL,
+            updated_at=_utcnow(),
+        )
+    )
     db.commit()
     return vec
 
@@ -175,7 +177,7 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
                     if score > best_score:
                         best, best_score = resp, score
                 except Exception as exc:
-                    logger.warning('Embedding failed for %s: %s', resp.id, exc)
+                    logger.warning("Embedding failed for %s: %s", resp.id, exc)
 
         if best is not None:
             # Detach simple attributes before session closes
@@ -189,6 +191,7 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
         # Rebuild a lightweight namespace so callers don't need a live ORM object
         class _Hit:
             pass
+
         hit = _Hit()
         hit.id = best_id
         hit.title = best_title
@@ -199,12 +202,11 @@ def find_best_match(project_id: int, query_text: str, threshold: float | None = 
 
 def rewrite(text: str, tone: str) -> str:
     system = (
-        'You are a support response editor. Rewrite the text in the required style. '
-        'Preserve placeholders @NAME, @DESIGNATION, @ROLE, @R, @DATE. '
-        'Do not invent facts. Output only the rewritten response.\n'
-        + STYLE_RULES
+        "You are a support response editor. Rewrite the text in the required style. "
+        "Preserve placeholders @NAME, @DESIGNATION, @ROLE, @R, @DATE. "
+        "Do not invent facts. Output only the rewritten response.\n" + STYLE_RULES
     )
-    user = f'Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\nText:\n{text}'
+    user = f"Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\nText:\n{text}"
     return chat(system, user)
 
 
@@ -222,27 +224,23 @@ def translate(text: str, target_language: str) -> str:
         "6. Match the original formality (formal support tone if present).\n"
         "7. Do not add or remove content."
     )
-    user_msg = (
-        f"Target language: {target_language}\n\n"
-        f"Source text:\n{text}"
-    )
+    user_msg = f"Target language: {target_language}\n\nSource text:\n{text}"
     return chat(system, user_msg)
-
 
 
 def correct_grammar(text: str) -> str:
     system = (
-        'Fix grammar, spelling and clarity only. '
-        'Do not change meaning or placeholders @NAME, @DESIGNATION, @ROLE, @R. '
-        'Output only the corrected text.'
+        "Fix grammar, spelling and clarity only. "
+        "Do not change meaning or placeholders @NAME, @DESIGNATION, @ROLE, @R. "
+        "Output only the corrected text."
     )
     return chat(system, text)
 
 
 def summarize(text: str) -> str:
     system = (
-        'Summarize this Jira comment for a support engineer. '
-        'Keep key facts, ticket numbers, and action items. Be concise.'
+        "Summarize this Jira comment for a support engineer. "
+        "Keep key facts, ticket numbers, and action items. Be concise."
     )
     return chat(system, text)
 
@@ -252,11 +250,11 @@ def generate_from_ticket(
     project_id: int,
     user_id: int,
     category_id: int | None = None,
-    tone: str = 'Professional',
+    tone: str = "Professional",
     save_if_new: bool = True,
     agent_name: str | None = None,
     agent_designation: str | None = None,
-    recipient: str = 'Customer',
+    recipient: str = "Customer",
 ) -> dict:
     """
     Reuse-first pipeline:
@@ -268,6 +266,7 @@ def generate_from_ticket(
     signature shows the real agent (e.g. "Thoubic IMRAN" / project designation).
     """
     from services.rate_limit import limit_ai_call
+
     limit_ai_call(user_id)
     matched, score = find_best_match(project_id, ticket_description)
     source_hash = _hash_text(ticket_description)
@@ -275,127 +274,150 @@ def generate_from_ticket(
     def _apply_agent(body: str) -> str:
         """Fill placeholders with the current agent (and optional recipient)."""
         from datetime import date
+
         values = {
-            'NAME': (agent_name or '@NAME').strip() or '@NAME',
-            'DESIGNATION': (agent_designation or '@DESIGNATION').strip() or '@DESIGNATION',
-            'R': (recipient or 'Customer').strip() or 'Customer',
-            'DATE': date.today().isoformat(),
-            'ROLE': 'user',
+            "NAME": (agent_name or "@NAME").strip() or "@NAME",
+            "DESIGNATION": (agent_designation or "@DESIGNATION").strip()
+            or "@DESIGNATION",
+            "R": (recipient or "Customer").strip() or "Customer",
+            "DATE": date.today().isoformat(),
+            "ROLE": "user",
         }
         import re
+
         return re.sub(
-            r'@(NAME|DESIGNATION|ROLE|R|DATE)\b',
+            r"@(NAME|DESIGNATION|ROLE|R|DATE)\b",
             lambda m: values[m.group(1).upper()],
-            body or '',
+            body or "",
             flags=re.I,
         )
 
     if matched:
         with SessionLocal() as db:
-            db.add(AIGenerationLog(
-                user_id=user_id,
-                project_id=project_id,
-                action='reuse',
-                source_text_hash=source_hash,
-                matched_response_id=matched.id,
-                similarity=score,
-                details=json.dumps({'title': matched.title}, ensure_ascii=False),
-            ))
+            db.add(
+                AIGenerationLog(
+                    user_id=user_id,
+                    project_id=project_id,
+                    action="reuse",
+                    source_text_hash=source_hash,
+                    matched_response_id=matched.id,
+                    similarity=score,
+                    details=json.dumps({"title": matched.title}, ensure_ascii=False),
+                )
+            )
             db.commit()
         return {
-            'mode': 'reuse',
-            'text': _apply_agent(matched.response_body),
-            'raw_text': matched.response_body,
-            'response_id': matched.id,
-            'similarity': score,
-            'title': matched.title,
+            "mode": "reuse",
+            "text": _apply_agent(matched.response_body),
+            "raw_text": matched.response_body,
+            "response_id": matched.id,
+            "similarity": score,
+            "title": matched.title,
         }
 
     system = (
-        'You write short Jira support replies for a multi-user response library.\n'
+        "You write short Jira support replies for a multi-user response library.\n"
         + STYLE_RULES
     )
     user_prompt = (
-        f'Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\n'
+        f"Tone: {TONE_INSTRUCTIONS.get(tone, tone)}\n\n"
         f'Recipient placeholder: use @R in the greeting (will be filled as "{recipient}").\n'
-        f'Agent name placeholder: @NAME\n'
-        f'Agent designation placeholder: @DESIGNATION\n\n'
-        f'Ticket / issue description:\n{ticket_description.strip()}\n\n'
-        'Write a short status/reply following the style rules.'
+        f"Agent name placeholder: @NAME\n"
+        f"Agent designation placeholder: @DESIGNATION\n\n"
+        f"Ticket / issue description:\n{ticket_description.strip()}\n\n"
+        "Write a short status/reply following the style rules."
     )
     body = chat(system, user_prompt)
     # Strip common model preambles
     for bad in (
-        'Here is a reusable response template:',
-        'Here is a reusable response template',
-        'Here is the response:',
-        'Here is a response template:',
+        "Here is a reusable response template:",
+        "Here is a reusable response template",
+        "Here is the response:",
+        "Here is a response template:",
     ):
         if body.lower().startswith(bad.lower()):
-            body = body[len(bad):].lstrip(' \n:')
+            body = body[len(bad) :].lstrip(" \n:")
 
-    title = chat(
-        'Create a short title (max 60 characters) for this support reply. '
-        'Output only the title, no quotes.',
-        body[:400],
-    ).strip().strip('"')[:60] or 'AI generated response'
+    title = (
+        chat(
+            "Create a short title (max 60 characters) for this support reply. "
+            "Output only the title, no quotes.",
+            body[:400],
+        )
+        .strip()
+        .strip('"')[:60]
+        or "AI generated response"
+    )
 
     personalized = _apply_agent(body)
     new_id = None
     if save_if_new and category_id:
         with SessionLocal() as db:
             order = db.scalar(
-                select(func.max(Response.sort_order)).where(Response.category_id == category_id)
+                select(func.max(Response.sort_order)).where(
+                    Response.category_id == category_id
+                )
             )
-            new_id = 'r_' + uuid.uuid4().hex[:16]
+            new_id = "r_" + uuid.uuid4().hex[:16]
             # Store TEMPLATE with placeholders so other users can personalize later
             row = Response(
                 id=new_id,
                 category_id=category_id,
                 title=title,
-                badge='AI',
-                preview=(body[:120] + '…') if len(body) > 120 else body,
+                badge="AI",
+                preview=(body[:120] + "…") if len(body) > 120 else body,
                 response_body=body,
                 sort_order=(order + 1 if order is not None else 0),
             )
             db.add(row)
             db.flush()
             try:
-                vec = embed(f'{row.title}\n{row.preview}\n{row.response_body}')
-                db.add(ResponseEmbedding(
-                    response_id=row.id,
-                    embedding_json=json.dumps(vec),
-                    model_name=OLLAMA_EMBED_MODEL,
-                ))
+                vec = embed(f"{row.title}\n{row.preview}\n{row.response_body}")
+                db.add(
+                    ResponseEmbedding(
+                        response_id=row.id,
+                        embedding_json=json.dumps(vec),
+                        model_name=OLLAMA_EMBED_MODEL,
+                    )
+                )
             except Exception as exc:
-                logger.warning('Could not store embedding for new response: %s', exc)
-            db.add(AIGenerationLog(
-                user_id=user_id,
-                project_id=project_id,
-                action='generate',
-                source_text_hash=source_hash,
-                created_response_id=new_id,
-                similarity=score,
-                details=json.dumps({'title': title, 'tone': tone}, ensure_ascii=False),
-            ))
+                logger.warning("Could not store embedding for new response: %s", exc)
+            db.add(
+                AIGenerationLog(
+                    user_id=user_id,
+                    project_id=project_id,
+                    action="generate",
+                    source_text_hash=source_hash,
+                    created_response_id=new_id,
+                    similarity=score,
+                    details=json.dumps(
+                        {"title": title, "tone": tone}, ensure_ascii=False
+                    ),
+                )
+            )
             db.commit()
     else:
         with SessionLocal() as db:
-            db.add(AIGenerationLog(
-                user_id=user_id,
-                project_id=project_id,
-                action='generate',
-                source_text_hash=source_hash,
-                similarity=score,
-                details=json.dumps({'title': title, 'tone': tone, 'saved': False}, ensure_ascii=False),
-            ))
+            db.add(
+                AIGenerationLog(
+                    user_id=user_id,
+                    project_id=project_id,
+                    action="generate",
+                    source_text_hash=source_hash,
+                    similarity=score,
+                    details=json.dumps(
+                        {"title": title, "tone": tone, "saved": False},
+                        ensure_ascii=False,
+                    ),
+                )
+            )
             db.commit()
 
     return {
-        'mode': 'generate',
-        'text': personalized,
-        'raw_text': body,
-        'response_id': new_id,
-        'similarity': score,
-        'title': title,
+        "mode": "generate",
+        "text": personalized,
+        "raw_text": body,
+        "response_id": new_id,
+        "similarity": score,
+        "title": title,
     }

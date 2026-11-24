@@ -1,4 +1,5 @@
 """Shared layout helpers."""
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -12,7 +13,9 @@ DEFAULT_COLUMNS = 3
 
 def card_columns(prefs: Mapping[str, Any] | None = None) -> int:
     """Number of cards per row from the user's preference (clamped to 1-4)."""
-    prefs = prefs if prefs is not None else (st.session_state.get("user_preferences") or {})
+    prefs = (
+        prefs if prefs is not None else (st.session_state.get("user_preferences") or {})
+    )
     try:
         value = int(prefs.get("card_columns", DEFAULT_COLUMNS))
     except (TypeError, ValueError):

@@ -3,6 +3,7 @@
 Used only when composing a comment in the Jira dialog. The stored template
 in the library is never modified.
 """
+
 from __future__ import annotations
 
 import html as html_lib
@@ -29,6 +30,9 @@ _JIRA_LINK_RE = re.compile(
     r"^\[([^\]|]+)\|((?:https?://)[^\]]+)\]\s*$",
     re.IGNORECASE,
 )
+
+# Personalization tokens that are often optional
+_OPTIONAL_TOKENS = {"@name", "@designation"}
 
 
 def extract_bracket_fields(text: str) -> list[str]:
@@ -120,11 +124,17 @@ def apply_bracket_fields(
     values: Mapping[str, str] | None,
     *,
     leave_missing: bool = False,
+    drop_unsupplied_placeholders: bool = False,
 ) -> str:
     """Replace [label] with normalized values.
 
-    By default missing labels become empty string. With leave_missing=True,
-    unfilled labels stay as [label] (dialog preview until the user types).
+    By default missing labels become empty string.
+
+    Args:
+        leave_missing: If True, unfilled labels stay as `[label]`.
+        drop_unsupplied_placeholders: If True, optional tokens (like @NAME, @DESIGNATION)
+            that are missing from `values` are cleanly removed along with any
+            trailing punctuation. This prevents empty signatures or stray commas.
     """
     if not text:
         return text or ""
@@ -138,9 +148,29 @@ def apply_bracket_fields(
         label = (m.group(1) or "").strip()
         if _WIKI_MENTION_RE.match(label):
             return m.group(0)
+
         key = label.lower()
+
+        # If missing and drop_unsupplied is on
+        if key not in norm and drop_unsupplied_placeholders:
+            # Only drop it if it's a known optional token (like @name)
+            if key in _OPTIONAL_TOKENS:
+                return ""  # Remove the placeholder entirely
+
         if key not in norm:
             return m.group(0) if leave_missing else ""
+
         return str(norm[key])
 
-    return _BRACKET_RE.sub(repl, text)
+    # Apply the replacement
+    result = _BRACKET_RE.sub(repl, text)
+
+    # If we dropped optional tokens, clean up leftover formatting like empty lines or stray punctuation
+    if drop_unsupplied_placeholders:
+        # Remove empty lines left behind in the signature
+        result = re.sub(r"\n\s*\n\s*\n", "\n\n", result)
+        # Clean up trailing commas or spaces left by removed fields
+        result = re.sub(r",\s*\n", "\n", result)
+        result = result.strip()
+
+    return result

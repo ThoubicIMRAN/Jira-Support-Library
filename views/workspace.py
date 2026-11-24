@@ -7,6 +7,7 @@ Data fetching is lazy per tab, all service calls are wrapped in helpers,
 and layout/UX is centralised. Navigation goes through the shared
 `utils.navigation.goto` contract.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,10 +17,7 @@ from typing import Any, Iterable, Sequence
 
 import streamlit as st
 
-from utils.errors import log_ignored
-
 from components.cards import page_header
-
 from services.workspace_service import (
     delete_saved_search,
     designation_overrides,
@@ -33,6 +31,7 @@ from services.workspace_service import (
     saved_searches,
     toggle_favorite,
 )
+from utils.errors import log_ignored
 from utils.navigation import (
     PAGE_PROJECT,
     SESSION_WORKSPACE_TAB,
@@ -170,7 +169,9 @@ def _response_tile(
             try:
                 toggle_favorite(user.id, row.id)
             except Exception:  # noqa: BLE001
-                logger.exception("Favorite toggle failed for user %s response %s", user.id, row.id)
+                logger.exception(
+                    "Favorite toggle failed for user %s response %s", user.id, row.id
+                )
                 st.error("Could not update favorite. Please try again.")
                 return
             _invalidate_user_caches()
@@ -225,9 +226,7 @@ def _render_search_tab(user, favorites: set[int]) -> None:
             "Load saved search",
             [None] + list(saved_lookup),
             format_func=lambda value: (
-                "Select a saved search"
-                if value is None
-                else saved_lookup[value].name
+                "Select a saved search" if value is None else saved_lookup[value].name
             ),
             key="workspace_saved_search_select",
         )
@@ -275,9 +274,7 @@ def _render_search_tab(user, favorites: set[int]) -> None:
         tag = col_tag.selectbox(
             "Tag",
             options.tag_names,
-            index=_selectbox_index(
-                options.tag_names, loaded.tag if loaded else None
-            ),
+            index=_selectbox_index(options.tag_names, loaded.tag if loaded else None),
             format_func=lambda value: "All tags" if value is None else value,
         )
 
@@ -328,7 +325,9 @@ def _render_search_tab(user, favorites: set[int]) -> None:
 
     with st.spinner("Searching…"):
         try:
-            results = global_search(term, project_id, category_id, tag, limit, viewer=user)
+            results = global_search(
+                term, project_id, category_id, tag, limit, viewer=user
+            )
         except Exception:  # noqa: BLE001
             logger.exception("Workspace search failed for user %s", user.id)
             st.error("Search failed. Please try again.")
@@ -430,7 +429,11 @@ def _render_saved_tab(user) -> None:
                 try:
                     delete_saved_search(user.id, item.id)
                 except Exception:  # noqa: BLE001
-                    logger.exception("Delete saved search failed for user %s search %s", user.id, item.id)
+                    logger.exception(
+                        "Delete saved search failed for user %s search %s",
+                        user.id,
+                        item.id,
+                    )
                     st.error("Could not delete saved search. Please try again.")
                 else:
                     st.session_state["workspace_flash"] = "Saved search deleted."
@@ -492,7 +495,11 @@ def _render_flash() -> None:
 # Entry point
 # --------------------------------------------------------------------------- #
 def render(user) -> None:
-    page_header("My Workspace", "Search, favourites, recently viewed and saved searches.", icon="⭐")
+    page_header(
+        "My Workspace",
+        "Search, favourites, recently viewed and saved searches.",
+        icon="⭐",
+    )
 
     _render_flash()
 

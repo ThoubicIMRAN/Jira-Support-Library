@@ -1,4 +1,5 @@
 """Add categories.parent_id if missing (safe for existing data)."""
+
 from __future__ import annotations
 
 from sqlalchemy import inspect, text
@@ -18,19 +19,25 @@ def migrate() -> None:
     with engine.begin() as conn:
         dialect = engine.dialect.name
         if dialect == "sqlite":
-            conn.execute(text(
-                "ALTER TABLE categories ADD COLUMN parent_id INTEGER "
-                "REFERENCES categories(id) ON DELETE CASCADE"
-            ))
+            conn.execute(
+                text(
+                    "ALTER TABLE categories ADD COLUMN parent_id INTEGER "
+                    "REFERENCES categories(id) ON DELETE CASCADE"
+                )
+            )
         else:
-            conn.execute(text(
-                "ALTER TABLE categories ADD COLUMN parent_id INTEGER NULL "
-                "REFERENCES categories(id) ON DELETE CASCADE"
-            ))
+            conn.execute(
+                text(
+                    "ALTER TABLE categories ADD COLUMN parent_id INTEGER NULL "
+                    "REFERENCES categories(id) ON DELETE CASCADE"
+                )
+            )
             try:
-                conn.execute(text(
-                    "CREATE INDEX IF NOT EXISTS ix_categories_parent_id ON categories (parent_id)"
-                ))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_categories_parent_id ON categories (parent_id)"
+                    )
+                )
             except Exception:
                 pass
     print("OK: added categories.parent_id (existing rows = top-level categories)")

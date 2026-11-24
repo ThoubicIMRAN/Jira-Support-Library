@@ -1,4 +1,5 @@
 """Announcements, maintenance, feature feedback + notify managers/admins."""
+
 from __future__ import annotations
 
 import logging
@@ -52,7 +53,9 @@ def set_maintenance(*, user_id: int, title: str, message: str, active: bool) -> 
 
     with SessionLocal() as db:
         if active:
-            for row in db.scalars(select(MaintenanceWindow).where(MaintenanceWindow.is_active.is_(True))):
+            for row in db.scalars(
+                select(MaintenanceWindow).where(MaintenanceWindow.is_active.is_(True))
+            ):
                 row.is_active = False
         db.add(
             MaintenanceWindow(
@@ -70,7 +73,9 @@ def clear_maintenance() -> None:
     from database import MaintenanceWindow
 
     with SessionLocal() as db:
-        for row in db.scalars(select(MaintenanceWindow).where(MaintenanceWindow.is_active.is_(True))):
+        for row in db.scalars(
+            select(MaintenanceWindow).where(MaintenanceWindow.is_active.is_(True))
+        ):
             row.is_active = False
         db.commit()
 
@@ -138,7 +143,9 @@ def submit_feedback(
             if not getattr(u, "email", None) or u.id == user_id:
                 continue
             try:
-                send_html_email(u.email, f"[JSL] {category}: {title.strip()[:60]}", html)
+                send_html_email(
+                    u.email, f"[JSL] {category}: {title.strip()[:60]}", html
+                )
             except Exception:
                 logger.exception("feedback email to %s failed", u.email)
     except Exception:
@@ -153,7 +160,9 @@ def list_feedback(limit: int = 50) -> list[dict]:
     with SessionLocal() as db:
         rows = list(
             db.scalars(
-                select(FeatureFeedback).order_by(FeatureFeedback.created_at.desc()).limit(limit)
+                select(FeatureFeedback)
+                .order_by(FeatureFeedback.created_at.desc())
+                .limit(limit)
             ).all()
         )
         out = []

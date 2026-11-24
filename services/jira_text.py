@@ -1,8 +1,8 @@
 """Prepare response text for Jira comments (reporter, mentions, resolution notes)."""
+
 from __future__ import annotations
 
 import re
-
 
 _THANKS_RE = re.compile(
     r"(?=(?:^|\n)\s*(?:"
@@ -87,14 +87,22 @@ def build_comment_preview(
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 
-def ensure_signature_placeholders(text: str) -> str:
-    """Ensure closing uses @NAME / @DESIGNATION; strip a hardcoded name block after Best regards.
 
-    Does not change the meaning of the message body. Safe to run when saving a template.
+def ensure_signature_placeholders(text: str, *, enforce_signature: bool = True) -> str:
+    """Ensure closing uses @NAME / @DESIGNATION; strip hardcoded name blocks.
+
+    Args:
+        text: The raw response body from the editor.
+        enforce_signature: If True (default), forces `@NAME` and `@DESIGNATION`
+                           into the signature block. If False, leaves the text
+                           exactly as the user typed it (no forced placeholders).
     """
-    import re
     t = (text or "").rstrip()
+
+    # If empty, return the default template (or an empty one based on enforcement)
     if not t:
+        if not enforce_signature:
+            return "Hello @R,\n\nThank you for your cooperation."
         return (
             "Hello @R,\n\n"
             "\n\n"
@@ -103,8 +111,35 @@ def ensure_signature_placeholders(text: str) -> str:
             "@NAME\n"
             "@DESIGNATION\n"
         )
-    # If already has @NAME in signature area, leave structure but still clean hardcoded lines after regards
-    # Remove lines after "Best regards," that look like a plain name/designation (no @)
+
+    # If we are NOT enforcing signatures, we just want to prevent double-cleanup.
+    # We strip hardcoded names, but we DO NOT append @NAME / @DESIGNATION.
+    if not enforce_signature:
+        m = re.search(
+            r"(?is)((?:Best regards|Kind regards|Regards),?\s*\n)((?:[^\n]+\n){0,4})\s*$",
+            t,
+        )
+        if m:
+            head, tail = t[: m.start(1)], m.group(1)
+            rest = m.group(2) or ""
+            lines = [ln.strip() for ln in rest.splitlines() if ln.strip()]
+            kept = []
+            for ln in lines:
+                # Keep lines that look like URLs or placeholders
+                if ln.startswith("@") or re.match(r"^https?://", ln, re.I):
+                    kept.append(ln)
+                # Drop plain personal name/designation lines
+                else:
+                    continue
+            # If there is a signature block but no placeholders, we drop the whole thing
+            # to keep the message clean.
+            if kept:
+                return (head + tail + "\n".join(kept) + "\n").rstrip() + "\n"
+            else:
+                return head.rstrip() + "\n"
+        return t
+
+    # --- Default behavior (Enforce signatures) ---
     m = re.search(
         r"(?is)((?:Best regards|Kind regards|Regards),?\s*\n)((?:[^\n]+\n){0,4})\s*$",
         t,
@@ -117,7 +152,6 @@ def ensure_signature_placeholders(text: str) -> str:
         for ln in lines:
             if ln.upper() in ("@NAME", "@DESIGNATION", "@ROLE") or ln.startswith("@"):
                 kept.append(ln)
-            # drop plain personal name/designation lines (no URL, short)
             elif re.match(r"^https?://", ln, re.I):
                 kept.append(ln)
             else:

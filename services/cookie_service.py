@@ -22,9 +22,9 @@ idle + absolute expiry, revocation). The browser only holds the raw token.
 Optional local-only fallback:
   ALLOW_URL_SESSION=true  → also mirror token in ?jsl_st= (dev only)
 """
+
 from __future__ import annotations
 
-from utils.errors import log_ignored
 import logging
 import os
 from typing import Optional
@@ -32,8 +32,10 @@ from typing import Optional
 import streamlit as st
 import streamlit.components.v1 as components
 
+from utils.errors import log_ignored
+
 try:
-    from config import SESSION_ABSOLUTE_HOURS, APP_ROOT_PATH
+    from config import APP_ROOT_PATH, SESSION_ABSOLUTE_HOURS
 except Exception:
     SESSION_ABSOLUTE_HOURS = 12
     APP_ROOT_PATH = ""
@@ -113,12 +115,20 @@ def get_session_cookie() -> Optional[str]:
     return None
 
 
-def set_session_cookie(session_token: str) -> None:
-    """Persist token so the next hard reload can restore the session."""
+def set_session_cookie(session_token: str, remember: bool = False) -> None:
+    """Persist token so the next hard reload can restore the session.
+
+    ``remember`` keeps the cookie for REMEMBER_ME_DAYS instead of SESSION_ABSOLUTE_HOURS.
+    """
     if not session_token:
         return
 
-    max_age = int(SESSION_ABSOLUTE_HOURS) * 3600
+    if remember:
+        from config import REMEMBER_ME_DAYS
+
+        max_age = int(REMEMBER_ME_DAYS) * 86400
+    else:
+        max_age = int(SESSION_ABSOLUTE_HOURS) * 3600
     path = _cookie_path()
     secure = _is_https()
     # Escape token for JS string (opaque urlsafe — still escape quotes/backslashes)

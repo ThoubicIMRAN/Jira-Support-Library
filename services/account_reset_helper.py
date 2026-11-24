@@ -1,4 +1,5 @@
 """Helpers for password-reset → sign-in prefill."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -15,7 +16,9 @@ def username_for_reset_token(token: str) -> str:
         return ""
     th = token_hash(token)
     with SessionLocal() as db:
-        row = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == th))
+        row = db.scalar(
+            select(PasswordResetToken).where(PasswordResetToken.token_hash == th)
+        )
         if not row:
             return ""
         user = db.get(User, row.user_id)

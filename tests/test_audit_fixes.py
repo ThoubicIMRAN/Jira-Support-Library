@@ -1,4 +1,5 @@
 """Regression tests for the security audit and the Jira attachment HTTP 415 bug."""
+
 import ast
 import io
 import re
@@ -7,11 +8,13 @@ from pathlib import Path
 
 import pytest
 import requests
+from conftest import PASSWORD
 from sqlalchemy import select
 
-from conftest import PASSWORD
 from database import AuditLog, Category, Project, Response, SessionLocal, User
-from services import ai_service, content_service as cs, jira_service as js, rate_limit
+from services import ai_service, rate_limit
+from services import content_service as cs
+from services import jira_service as js
 from utils.errors import safe_message
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +26,13 @@ def _user(name: str, role: str) -> int:
     with SessionLocal() as db:
         row = db.scalar(select(User).where(User.username == name))
         if not row:
-            row = User(username=name, full_name=name, role=role, password_hash=hash_password(PASSWORD), must_change_password=False)
+            row = User(
+                username=name,
+                full_name=name,
+                role=role,
+                password_hash=hash_password(PASSWORD),
+                must_change_password=False,
+            )
             db.add(row)
             db.commit()
             db.refresh(row)
@@ -46,7 +55,12 @@ def test_attachment_upload_is_multipart_not_json(monkeypatch):
         return resp
 
     monkeypatch.setattr(requests.Session, "send", fake_send)
-    client = JiraClient(base_url="https://jira.example.com", product="cloud", email="a@b.co", secret="token")
+    client = JiraClient(
+        base_url="https://jira.example.com",
+        product="cloud",
+        email="a@b.co",
+        secret="token",
+    )
     out = client.add_attachment("PROJ-1", "a.png", b"\x89PNG\r\n\x1a\n" + b"0" * 20)
     assert seen["content_type"].startswith("multipart/form-data; boundary=")
     assert seen["token"] == "no-check"
@@ -66,7 +80,12 @@ def test_json_requests_still_send_json(monkeypatch):
         return resp
 
     monkeypatch.setattr(requests.Session, "send", fake_send)
-    client = JiraClient(base_url="https://jira.example.com", product="cloud", email="a@b.co", secret="token")
+    client = JiraClient(
+        base_url="https://jira.example.com",
+        product="cloud",
+        email="a@b.co",
+        secret="token",
+    )
     client.add_worklog("PROJ-1", time_spent="15m")
     assert seen["ct"] == "application/json"
 
@@ -99,11 +118,23 @@ def test_avatar_actor_must_be_self_or_superadmin():
 
 # ------------------------------------------------------------------ H3 rate limiting
 RATE_LIMITED = {
-    "services/jira_service.py": ["add_comment", "add_attachment", "log_work", "transition_issue", "add_watchers"],
+    "services/jira_service.py": [
+        "add_comment",
+        "add_attachment",
+        "log_work",
+        "transition_issue",
+        "add_watchers",
+    ],
     "services/bulk_comment.py": ["post_bulk_comment"],
     "services/account_service.py": ["admin_set_password", "delete_user"],
     "services/ai_service.py": ["generate_from_ticket"],
-    "services/content_service.py": ["create_response", "update_response", "delete_response", "create_category", "import_project_payload"],
+    "services/content_service.py": [
+        "create_response",
+        "update_response",
+        "delete_response",
+        "create_category",
+        "import_project_payload",
+    ],
 }
 
 
@@ -112,8 +143,14 @@ def test_every_sensitive_write_is_rate_limited(path, names):
     tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
     funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     for name in names:
-        calls = [c.func.id for c in ast.walk(funcs[name]) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
-        assert any(c.startswith("limit_") for c in calls), f"{path}:{name} has no rate limit"
+        calls = [
+            c.func.id
+            for c in ast.walk(funcs[name])
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        ]
+        assert any(c.startswith("limit_") for c in calls), (
+            f"{path}:{name} has no rate limit"
+        )
 
 
 def test_rate_limiter_blocks_and_is_user_safe(monkeypatch):
@@ -142,13 +179,23 @@ def test_avatar_is_reencoded_to_a_small_square_png():
     from services.avatar_service import get_avatar, set_avatar
 
     uid = _user("audit_avatar", "user")
-    set_avatar(uid, _png(), "image/jpeg", actor_id=uid, actor_role="user")   # wrong MIME is ignored
+    set_avatar(
+        uid, _png(), "image/jpeg", actor_id=uid, actor_role="user"
+    )  # wrong MIME is ignored
     data, mime = get_avatar(uid)
     img = Image.open(io.BytesIO(data))
     assert mime == "image/png" and img.format == "PNG" and img.size == (256, 256)
 
 
-@pytest.mark.parametrize("payload", [b"GIF89a" + b"0" * 40, b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>", b"not an image", b"\x89PNG\r\n\x1a\n broken"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"GIF89a" + b"0" * 40,
+        b"<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>",
+        b"not an image",
+        b"\x89PNG\r\n\x1a\n broken",
+    ],
+)
 def test_avatar_rejects_non_images_even_with_an_image_mime(payload):
     from services.avatar_service import AvatarError, set_avatar
 
@@ -167,10 +214,22 @@ def test_jql_literals_are_escaped_and_identifiers_validated(monkeypatch):
             return []
 
     monkeypatch.setattr(js, "get_client_for_user", lambda uid: FakeClient())
-    js.find_similar_open_issues(1, {"key": "PROJ-5", "project_key": "PROJ", "summary": 'login a\\b"c broken'})
+    js.find_similar_open_issues(
+        1, {"key": "PROJ-5", "project_key": "PROJ", "summary": 'login a\\b"c broken'}
+    )
     assert '\\"' in seen["jql"] and "\\\\" in seen["jql"]
     seen.clear()
-    assert js.find_similar_open_issues(1, {"key": "PROJ-5", "project_key": 'X" OR "1"="1', "summary": "long summary words"}) == []
+    assert (
+        js.find_similar_open_issues(
+            1,
+            {
+                "key": "PROJ-5",
+                "project_key": 'X" OR "1"="1',
+                "summary": "long summary words",
+            },
+        )
+        == []
+    )
     assert "jql" not in seen
 
 
@@ -179,14 +238,29 @@ def test_one_ticket_load_cannot_trigger_unbounded_embedding_calls(monkeypatch):
     from services import similarity_search as ss
 
     with SessionLocal() as db:
-        p = Project(key="EMBT", name="Embed test", description="", icon="x", color="#000000", sort_order=99)
+        p = Project(
+            key="EMBT",
+            name="Embed test",
+            description="",
+            icon="x",
+            color="#000000",
+            sort_order=99,
+        )
         db.add(p)
         db.flush()
         c = Category(project_id=p.id, name="Embed cat", sort_order=0)
         db.add(c)
         db.flush()
         for i in range(30):
-            db.add(Response(id=f"emb_{i}", category_id=c.id, title=f"R{i}", response_body=f"body {i}", sort_order=i))
+            db.add(
+                Response(
+                    id=f"emb_{i}",
+                    category_id=c.id,
+                    title=f"R{i}",
+                    response_body=f"body {i}",
+                    sort_order=i,
+                )
+            )
         db.commit()
         pid = p.id
     calls = {"n": 0}
@@ -208,7 +282,11 @@ def test_category_creation_is_audited():
         pid = db.scalar(select(Project.id).order_by(Project.id))
     cid = cs.create_category(uid, "admin", pid, "Audited category")
     with SessionLocal() as db:
-        row = db.scalar(select(AuditLog).where(AuditLog.entity_type == "category", AuditLog.entity_id == str(cid)))
+        row = db.scalar(
+            select(AuditLog).where(
+                AuditLog.entity_type == "category", AuditLog.entity_id == str(cid)
+            )
+        )
     assert row is not None and row.action == "create"
 
 
@@ -225,10 +303,19 @@ def test_no_silent_except_pass_and_no_raw_exception_text_in_ui():
         for path in (ROOT / folder).rglob("*.py"):
             src = path.read_text(encoding="utf-8")
             for node in ast.walk(ast.parse(src)):
-                if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} except/pass")
+                if (
+                    isinstance(node, ast.ExceptHandler)
+                    and len(node.body) == 1
+                    and isinstance(node.body[0], ast.Pass)
+                ):
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno} except/pass"
+                    )
             for i, line in enumerate(src.splitlines(), 1):
-                if re.search(r"st\.(error|warning)\(str\((exc|e)\)\)|st\.(error|warning)\(f[\"'].*\{(exc|e)\}", line):
+                if re.search(
+                    r"st\.(error|warning)\(str\((exc|e)\)\)|st\.(error|warning)\(f[\"'].*\{(exc|e)\}",
+                    line,
+                ):
                     offenders.append(f"{path.relative_to(ROOT)}:{i} raw exception text")
     assert not offenders, offenders
 
@@ -238,7 +325,9 @@ def test_every_module_imports():
     """A module referenced but missing (or a broken import) must fail CI, not fail silently at runtime."""
     import importlib
 
-    files = subprocess.run(["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+    files = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.split()
     failed = []
     for f in files:
         if f.startswith(("alembic/", "tests/", "scripts/")) or f == "app.py":
@@ -252,17 +341,42 @@ def test_every_module_imports():
 
 def test_lazy_service_imports_point_to_real_modules():
     missing = set()
-    for path in list((ROOT / "views").rglob("*.py")) + list((ROOT / "services").rglob("*.py")):
-        for m in re.finditer(r"from services\.([a-z_]+) import", path.read_text(encoding="utf-8")):
+    for path in list((ROOT / "views").rglob("*.py")) + list(
+        (ROOT / "services").rglob("*.py")
+    ):
+        for m in re.finditer(
+            r"from services\.([a-z_]+) import", path.read_text(encoding="utf-8")
+        ):
             if not (ROOT / "services" / f"{m.group(1)}.py").exists():
                 missing.add(f"{path.relative_to(ROOT)} -> services/{m.group(1)}.py")
     assert not missing, missing
 
 
 def test_no_patch_scripts_or_encoded_code_blobs_are_committed():
-    files = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+    files = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.split()
     assert not [f for f in files if re.search(r"(APPLY|SYNC|PATCH)[A-Za-z_]*\.py$", f)]
-    assert not [f for f in files if f in ("ci-docker.yml", "dependabot.yml")], "workflow files belong in .github/"
+    assert not [f for f in files if f in ("ci-docker.yml", "dependabot.yml")], (
+        "workflow files belong in .github/"
+    )
     for f in files:
         if f.endswith(".py"):
-            assert not re.search(r"[A-Za-z0-9+/=]{1500,}", (ROOT / f).read_text(encoding="utf-8")), f"encoded blob in {f}"
+            assert not re.search(
+                r"[A-Za-z0-9+/=]{1500,}", (ROOT / f).read_text(encoding="utf-8")
+            ), f"encoded blob in {f}"
+
+
+def test_release_notes_match_app_version():
+    """APP_VERSION, docs/releases.json and CHANGELOG.md must agree (they drifted for four releases once)."""
+    import json
+    import re
+    from pathlib import Path
+
+    from config import APP_VERSION
+
+    root = Path(__file__).resolve().parent.parent
+    releases = json.loads((root / "docs" / "releases.json").read_text(encoding="utf-8"))
+    assert releases[0]["version"] == APP_VERSION
+    top = re.search(r"^## \[([0-9.]+)\]", (root / "CHANGELOG.md").read_text(encoding="utf-8"), re.M)
+    assert top and top.group(1) == APP_VERSION

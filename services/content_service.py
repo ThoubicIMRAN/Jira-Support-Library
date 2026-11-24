@@ -3,6 +3,7 @@
 Every mutating function enforces RBAC itself (never trusts the UI), runs in one
 transaction, rolls back on failure and writes an audit record.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,6 +35,7 @@ def _require(role: str, permission: str) -> None:
 
 def _check_project(user_id, role, project_id):
     from services.project_access import visible_project_ids
+
     ids = visible_project_ids(user_id, role)
     if ids is not None and int(project_id) not in ids:
         raise ContentError("You do not have access to this project.")
@@ -48,15 +50,26 @@ def _clean_fields(title, badge, preview, body):
     badge, preview = (badge or "").strip(), (preview or "").strip()
     if not title or not body:
         raise ContentError("Title and response body are required.")
-    if len(title) > MAX_TITLE or len(badge) > MAX_BADGE or len(preview) > MAX_PREVIEW or len(body) > MAX_BODY:
+    if (
+        len(title) > MAX_TITLE
+        or len(badge) > MAX_BADGE
+        or len(preview) > MAX_PREVIEW
+        or len(body) > MAX_BODY
+    ):
         raise ContentError("One of the fields is too long.")
     return title, badge or None, preview or None, body
 
 
 def audit(db, user_id, action, entity_type, entity_id=None, details=None):
-    db.add(AuditLog(user_id=user_id, action=action, entity_type=entity_type,
-                    entity_id=str(entity_id) if entity_id is not None else None,
-                    details=json.dumps(details or {}, ensure_ascii=False)))
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=str(entity_id) if entity_id is not None else None,
+            details=json.dumps(details or {}, ensure_ascii=False),
+        )
+    )
 
 
 def normalize_orders(db, model, parent_filter=None):
@@ -75,7 +88,10 @@ def _move(db, rows, entity_id, direction):
     target = index + direction if index is not None else -1
     if index is None or target < 0 or target >= len(rows):
         return False
-    rows[index].sort_order, rows[target].sort_order = rows[target].sort_order, rows[index].sort_order
+    rows[index].sort_order, rows[target].sort_order = (
+        rows[target].sort_order,
+        rows[index].sort_order,
+    )
     return True
 
 
@@ -115,11 +131,13 @@ def find_near_duplicates(
 ) -> list[dict]:
     """Semantic near-duplicates of body within a project (for save warnings)."""
     from services.similarity_search import find_near_duplicates as _fn
+
     return _fn(project_id, body, threshold=threshold, limit=limit)
 
 
 def create_response(user_id, role, category_id, title, badge, preview, body):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "create")
     title, badge, preview, body = _clean_fields(title, badge, preview, body)
@@ -129,9 +147,23 @@ def create_response(user_id, role, category_id, title, badge, preview, body):
             if not category:
                 raise ContentError("Category not found.")
             _check_project(user_id, role, category.project_id)
-            order = (db.scalar(select(func.max(Response.sort_order)).where(Response.category_id == category_id)) or 0) + 1
-            row = Response(id=_new_id(), category_id=category_id, title=title, badge=badge,
-                           preview=preview, response_body=body, sort_order=order)
+            order = (
+                db.scalar(
+                    select(func.max(Response.sort_order)).where(
+                        Response.category_id == category_id
+                    )
+                )
+                or 0
+            ) + 1
+            row = Response(
+                id=_new_id(),
+                category_id=category_id,
+                title=title,
+                badge=badge,
+                preview=preview,
+                response_body=body,
+                sort_order=order,
+            )
             db.add(row)
             audit(db, user_id, "create", "response", row.id, {"title": title})
             db.commit()
@@ -143,8 +175,11 @@ def create_response(user_id, role, category_id, title, badge, preview, body):
         raise
 
 
-def update_response(user_id, role, response_id, category_id, title, badge, preview, body):
+def update_response(
+    user_id, role, response_id, category_id, title, badge, preview, body
+):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "edit")
     title, badge, preview, body = _clean_fields(title, badge, preview, body)
@@ -158,7 +193,13 @@ def update_response(user_id, role, response_id, category_id, title, badge, previ
             if not target:
                 raise ContentError("Category not found.")
             _check_project(user_id, role, target.project_id)
-            row.category_id, row.title, row.badge, row.preview, row.response_body = category_id, title, badge, preview, body
+            row.category_id, row.title, row.badge, row.preview, row.response_body = (
+                category_id,
+                title,
+                badge,
+                preview,
+                body,
+            )
             audit(db, user_id, "update", "response", response_id, {"title": title})
             db.commit()
     except ContentError:
@@ -170,6 +211,7 @@ def update_response(user_id, role, response_id, category_id, title, badge, previ
 
 def delete_response(user_id, role, response_id):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "delete")
     try:
@@ -190,6 +232,7 @@ def delete_response(user_id, role, response_id):
 
 def duplicate_response(response_id, user_id, role="superadmin"):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "duplicate")
     with SessionLocal() as db:
@@ -197,12 +240,27 @@ def duplicate_response(response_id, user_id, role="superadmin"):
         if not source:
             return False
         _check_project(user_id, role, db.get(Category, source.category_id).project_id)
-        max_order = db.scalar(select(func.max(Response.sort_order)).where(Response.category_id == source.category_id)) or 0
-        clone = Response(id=_new_id(), category_id=source.category_id,
-                         title=f'{source.title} (Copy)', badge=source.badge, preview=source.preview,
-                         response_body=source.response_body, sort_order=max_order + 1)
+        max_order = (
+            db.scalar(
+                select(func.max(Response.sort_order)).where(
+                    Response.category_id == source.category_id
+                )
+            )
+            or 0
+        )
+        clone = Response(
+            id=_new_id(),
+            category_id=source.category_id,
+            title=f"{source.title} (Copy)",
+            badge=source.badge,
+            preview=source.preview,
+            response_body=source.response_body,
+            sort_order=max_order + 1,
+        )
         db.add(clone)
-        audit(db, user_id, 'duplicate', 'response', clone.id, {'source_id': response_id})
+        audit(
+            db, user_id, "duplicate", "response", clone.id, {"source_id": response_id}
+        )
         db.commit()
         return True
 
@@ -215,13 +273,30 @@ def export_project_payload(project_id):
             return None
         return {
             "schema_version": 1,
-            "project": {"key": p.key, "name": p.name, "description": p.description, "icon": p.icon, "color": p.color},
+            "project": {
+                "key": p.key,
+                "name": p.name,
+                "description": p.description,
+                "icon": p.icon,
+                "color": p.color,
+            },
             "categories": [
-                {"name": c.name, "sort_order": c.sort_order, "responses": [
-                    {"id": r.id, "title": r.title, "badge": r.badge, "preview": r.preview,
-                     "response_body": r.response_body, "sort_order": r.sort_order}
-                    for r in c.responses
-                ]} for c in p.categories
+                {
+                    "name": c.name,
+                    "sort_order": c.sort_order,
+                    "responses": [
+                        {
+                            "id": r.id,
+                            "title": r.title,
+                            "badge": r.badge,
+                            "preview": r.preview,
+                            "response_body": r.response_body,
+                            "sort_order": r.sort_order,
+                        }
+                        for r in c.responses
+                    ],
+                }
+                for c in p.categories
             ],
         }
 
@@ -240,11 +315,17 @@ def _normalise_payload(payload):
 
 def import_project_payload(project_id, payload, user_id, role="superadmin"):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "import")
     _check_project(user_id, role, project_id)
     categories = _normalise_payload(payload)
-    if sum(len(c.get("responses", []) or []) for c in categories if isinstance(c, dict)) > MAX_IMPORT_RESPONSES:
+    if (
+        sum(
+            len(c.get("responses", []) or []) for c in categories if isinstance(c, dict)
+        )
+        > MAX_IMPORT_RESPONSES
+    ):
         raise ContentError(f"Import is limited to {MAX_IMPORT_RESPONSES} responses.")
     try:
         with SessionLocal() as db:
@@ -260,32 +341,65 @@ def import_project_payload(project_id, payload, user_id, role="superadmin"):
                 name = str(category_data.get("name", "") or "").strip()
                 if not name:
                     raise ContentError(f"Category {ci + 1} has no name.")
-                category = db.scalar(select(Category).where(Category.project_id == project_id, Category.name == name))
+                category = db.scalar(
+                    select(Category).where(
+                        Category.project_id == project_id, Category.name == name
+                    )
+                )
                 if not category:
-                    category = Category(project_id=project_id, name=name[:180], sort_order=next_cat)
+                    category = Category(
+                        project_id=project_id, name=name[:180], sort_order=next_cat
+                    )
                     next_cat += 1
                     db.add(category)
                     db.flush()
                 responses = category_data.get("responses", [])
                 if not isinstance(responses, list):
                     raise ContentError(f"Responses in {name} must be a list.")
-                base = (db.scalar(select(func.max(Response.sort_order)).where(Response.category_id == category.id)) or 0)
+                base = (
+                    db.scalar(
+                        select(func.max(Response.sort_order)).where(
+                            Response.category_id == category.id
+                        )
+                    )
+                    or 0
+                )
                 for ri, record in enumerate(responses):
                     if not isinstance(record, dict):
                         raise ContentError(f"Invalid response at {name} row {ri + 1}.")
                     try:
                         title, badge, preview, body = _clean_fields(
-                            record.get("title"), record.get("badge"), record.get("preview"),
-                            record.get("response_body", record.get("response")))
+                            record.get("title"),
+                            record.get("badge"),
+                            record.get("preview"),
+                            record.get("response_body", record.get("response")),
+                        )
                     except ContentError:
                         raise ContentError(f"Invalid response at {name} row {ri + 1}.")
                     proposed = str(record.get("id", "") or "").strip()
-                    rid = proposed if proposed and len(proposed) <= 80 and proposed not in existing_ids else _new_id()
+                    rid = (
+                        proposed
+                        if proposed
+                        and len(proposed) <= 80
+                        and proposed not in existing_ids
+                        else _new_id()
+                    )
                     existing_ids.add(rid)
-                    db.add(Response(id=rid, category_id=category.id, title=title, badge=badge,
-                                    preview=preview, response_body=body, sort_order=base + ri + 1))
+                    db.add(
+                        Response(
+                            id=rid,
+                            category_id=category.id,
+                            title=title,
+                            badge=badge,
+                            preview=preview,
+                            response_body=body,
+                            sort_order=base + ri + 1,
+                        )
+                    )
                     added += 1
-            audit(db, user_id, "import", "project", project_id, {"responses_added": added})
+            audit(
+                db, user_id, "import", "project", project_id, {"responses_added": added}
+            )
             db.commit()
             return added
     except ContentError:
@@ -320,6 +434,7 @@ def list_category_tree(project_id: int) -> list[dict]:
 
 def create_category(user_id, role, project_id, name, parent_id=None):
     from services.rate_limit import limit_content_write
+
     limit_content_write(user_id)
     _require(role, "manage_content")
     name = (name or "").strip()
@@ -337,16 +452,27 @@ def create_category(user_id, role, project_id, name, parent_id=None):
             db.scalar(
                 select(func.max(Category.sort_order)).where(
                     Category.project_id == project_id,
-                    Category.parent_id == parent_id if parent_id else Category.parent_id.is_(None),
+                    Category.parent_id == parent_id
+                    if parent_id
+                    else Category.parent_id.is_(None),
                 )
             )
             or 0
         ) + 1
-        row = Category(project_id=project_id, name=name, parent_id=parent_id, sort_order=order)
+        row = Category(
+            project_id=project_id, name=name, parent_id=parent_id, sort_order=order
+        )
         db.add(row)
         try:
             db.flush()
-            audit(db, user_id, "create", "category", row.id, {"name": name, "parent_id": parent_id})
+            audit(
+                db,
+                user_id,
+                "create",
+                "category",
+                row.id,
+                {"name": name, "parent_id": parent_id},
+            )
             db.commit()
         except Exception:
             db.rollback()

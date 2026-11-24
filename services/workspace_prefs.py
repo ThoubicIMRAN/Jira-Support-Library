@@ -3,6 +3,7 @@
 Phase 1 stores data in ``st.session_state`` only (survives reruns, not browser
 restarts). A later release can persist to the database without changing callers.
 """
+
 from __future__ import annotations
 
 from typing import Any

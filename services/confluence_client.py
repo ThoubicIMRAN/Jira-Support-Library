@@ -1,4 +1,5 @@
 """Confluence page fetch — Server/DC + Cloud, multiple auth modes."""
+
 from __future__ import annotations
 
 import json
@@ -92,7 +93,9 @@ def fetch_page(
     derived = derive_base_url(url_or_id)
     base = (derived or base_url or "").rstrip("/")
     if not base:
-        raise ConfluenceError("Confluence base URL missing. Paste a full https://… page link.")
+        raise ConfluenceError(
+            "Confluence base URL missing. Paste a full https://… page link."
+        )
     if not (secret or "").strip():
         raise ConfluenceError(
             "No Confluence token configured. "
@@ -102,7 +105,9 @@ def fetch_page(
 
     page_id = parse_page_id(url_or_id)
     if not page_id:
-        raise ConfluenceError("Could not parse page id from the URL (.../pages/12345/...).")
+        raise ConfluenceError(
+            "Could not parse page id from the URL (.../pages/12345/...)."
+        )
 
     paths = [
         f"{base}/rest/api/content/{page_id}",
@@ -161,8 +166,22 @@ def fetch_page(
 
     title = data.get("title") or "Confluence page"
     body = data.get("body") or {}
-    raw = (body.get("storage") or {}).get("value") or (body.get("view") or {}).get("value") or ""
+    raw = (
+        (body.get("storage") or {}).get("value")
+        or (body.get("view") or {}).get("value")
+        or ""
+    )
     excerpt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()[:1200]
     space = (data.get("space") or {}).get("key") or ""
-    link = url_or_id if str(url_or_id).startswith("http") else f"{base}/spaces/{space}/pages/{page_id}"
-    return {"id": page_id, "title": title, "excerpt": excerpt, "link": link, "base_url": base}
+    link = (
+        url_or_id
+        if str(url_or_id).startswith("http")
+        else f"{base}/spaces/{space}/pages/{page_id}"
+    )
+    return {
+        "id": page_id,
+        "title": title,
+        "excerpt": excerpt,
+        "link": link,
+        "base_url": base,
+    }

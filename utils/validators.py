@@ -1,12 +1,11 @@
 """Input validators."""
+
 from __future__ import annotations
 
 import re
 
 _HEX = re.compile(r"^#?[0-9a-fA-F]{6}$")
-_PASSWORD = re.compile(
-    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,128}$"
-)
+_PASSWORD = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,128}$")
 
 
 def valid_password(value: str | None) -> bool:

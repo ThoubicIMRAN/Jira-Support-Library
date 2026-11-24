@@ -1,4 +1,5 @@
 """Robust SMTP send + diagnostics for invitations, resets, and test mail."""
+
 from __future__ import annotations
 
 import logging
@@ -13,7 +14,7 @@ from email.utils import formataddr
 from sqlalchemy import select
 
 from config import APP_NAME
-from database import SMTPConfig, SessionLocal
+from database import SessionLocal, SMTPConfig
 from utils.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,9 @@ def _load_config() -> dict:
         }
 
 
-def _open_client(host: str, port: int, use_tls: bool, use_ssl: bool, timeout: float = 30.0):
+def _open_client(
+    host: str, port: int, use_tls: bool, use_ssl: bool, timeout: float = 30.0
+):
     context = ssl.create_default_context()
     if use_ssl:
         client = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
@@ -195,7 +198,9 @@ def send_html_email(recipient: str, subject: str, html_body: str) -> None:
 
     client = None
     try:
-        client = _open_client(cfg["host"], int(cfg["port"]), use_tls, use_ssl, timeout=30)
+        client = _open_client(
+            cfg["host"], int(cfg["port"]), use_tls, use_ssl, timeout=30
+        )
         if cfg["username"]:
             client.login(cfg["username"], cfg["password"])
         refused = client.sendmail(cfg["sender_email"], [recipient], message.as_string())
@@ -219,7 +224,9 @@ def send_html_email(recipient: str, subject: str, html_body: str) -> None:
             "Check host, port, firewall, and SSL vs STARTTLS."
         ) from exc
     except TimeoutError as exc:
-        raise RuntimeError(f"SMTP connection timed out ({cfg['host']}:{cfg['port']}).") from exc
+        raise RuntimeError(
+            f"SMTP connection timed out ({cfg['host']}:{cfg['port']})."
+        ) from exc
     except ssl.SSLError as exc:
         raise RuntimeError(
             f"TLS/SSL error: {exc}. Try port 587 + STARTTLS, or port 465 + Implicit SSL."
@@ -244,7 +251,7 @@ def send_html_email(recipient: str, subject: str, html_body: str) -> None:
 def branded_email(title, message, action_label=None, action_url=None):
     action = (
         f'<p><a href="{action_url}" style="display:inline-block;background:#0c46ce;'
-        f'color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;'
+        f"color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;"
         f'font-weight:700">{action_label}</a></p>'
         if action_label and action_url
         else ""
@@ -259,6 +266,6 @@ def branded_email(title, message, action_label=None, action_url=None):
         f'<div style="padding:28px"><h2>{title}</h2>'
         f'<div style="line-height:1.65">{message}</div>{action}'
         f'<p style="color:#657391;font-size:12px">'
-        f'If you did not request this action, you can ignore this email.</p>'
-        f'</div></div></body></html>'
+        f"If you did not request this action, you can ignore this email.</p>"
+        f"</div></div></body></html>"
     )

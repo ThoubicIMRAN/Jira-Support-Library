@@ -4,6 +4,7 @@ Auth:
   Cloud  → Basic (email, API token)
   Server → Bearer PAT  (or Basic if email provided)
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,8 +38,14 @@ def adf_document(text: str) -> dict:
                 nodes.append({"type": "hardBreak"})
             if line:
                 nodes.append({"type": "text", "text": line})
-        paragraphs.append({"type": "paragraph", "content": nodes} if nodes else {"type": "paragraph"})
-    return {"type": "doc", "version": 1, "content": paragraphs or [{"type": "paragraph"}]}
+        paragraphs.append(
+            {"type": "paragraph", "content": nodes} if nodes else {"type": "paragraph"}
+        )
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": paragraphs or [{"type": "paragraph"}],
+    }
 
 
 class JiraClient:
@@ -125,7 +132,9 @@ class JiraClient:
         return self.request("POST", path, **kwargs)
 
     def myself(self) -> dict:
-        return self.get("/rest/api/3/myself" if self.product == "cloud" else "/rest/api/2/myself")
+        return self.get(
+            "/rest/api/3/myself" if self.product == "cloud" else "/rest/api/2/myself"
+        )
 
     def get_issue(self, key: str, fields: str | None = None) -> dict:
         api = "3" if self.product == "cloud" else "2"
@@ -157,7 +166,9 @@ class JiraClient:
                 else {"body": text, "public": False}
             )
             try:
-                return self.post(f"/rest/servicedeskapi/request/{key}/comment", json=sd_payload)
+                return self.post(
+                    f"/rest/servicedeskapi/request/{key}/comment", json=sd_payload
+                )
             except JiraError:
                 if self.product == "cloud":
                     payload = {"body": adf_document(text)}
@@ -175,12 +186,11 @@ class JiraClient:
             payload = {"body": text}
             sd_payload = {"body": text, "public": True}
         try:
-            return self.post(f"/rest/servicedeskapi/request/{key}/comment", json=sd_payload)
+            return self.post(
+                f"/rest/servicedeskapi/request/{key}/comment", json=sd_payload
+            )
         except JiraError:
             return self.post(f"/rest/api/{api}/issue/{key}/comment", json=payload)
-
-
-
 
     def add_watcher(self, key: str, account_or_username: str) -> None:
         """Add a watcher / participant. Cloud uses accountId; Server/DC uses username."""
@@ -196,6 +206,7 @@ class JiraClient:
         if bearer:
             headers["Authorization"] = bearer
         import json as _json
+
         resp = self._session.post(
             url,
             headers=headers,
@@ -229,12 +240,14 @@ class JiraClient:
             return []
         out = []
         for u in data:
-            out.append({
-                "accountId": u.get("accountId") or "",
-                "name": u.get("name") or "",
-                "displayName": u.get("displayName") or u.get("name") or "",
-                "emailAddress": u.get("emailAddress") or "",
-            })
+            out.append(
+                {
+                    "accountId": u.get("accountId") or "",
+                    "name": u.get("name") or "",
+                    "displayName": u.get("displayName") or u.get("name") or "",
+                    "emailAddress": u.get("emailAddress") or "",
+                }
+            )
         return out
 
     def add_attachment(
@@ -248,14 +261,22 @@ class JiraClient:
         url = self._url(f"/rest/api/{api}/issue/{key}/attachments")
         # The session default "Content-Type: application/json" would stop requests from adding the
         # multipart boundary (Jira then answers HTTP 415). None removes that default for this call.
-        headers = {"Accept": "application/json", "X-Atlassian-Token": "no-check", "Content-Type": None}
+        headers = {
+            "Accept": "application/json",
+            "X-Atlassian-Token": "no-check",
+            "Content-Type": None,
+        }
         auth = self._session.auth
         bearer = self._session.headers.get("Authorization")
         if bearer:
             headers["Authorization"] = bearer
         import mimetypes
 
-        guessed = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        guessed = (
+            content_type
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
         files = {"file": (filename, content, guessed)}
         resp = self._session.post(
             url, headers=headers, files=files, auth=auth, timeout=self.timeout
@@ -267,8 +288,6 @@ class JiraClient:
             )
         data = resp.json() if resp.content else {}
         return data[0] if isinstance(data, list) and data else (data or {})
-
-
 
     def add_worklog(
         self,
@@ -301,8 +320,9 @@ class JiraClient:
             json={"transition": {"id": str(transition_id)}},
         )
 
-
-    def search_issues(self, jql: str, *, max_results: int = 10, fields: str = "summary,status,created") -> list[dict]:
+    def search_issues(
+        self, jql: str, *, max_results: int = 10, fields: str = "summary,status,created"
+    ) -> list[dict]:
         api = "3" if self.product == "cloud" else "2"
         data = self.get(
             f"/rest/api/{api}/search",

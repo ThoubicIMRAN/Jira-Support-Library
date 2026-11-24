@@ -5,10 +5,10 @@ every view agrees on the same strings. The `goto()` helper is the only
 sanctioned way to change pages — it keeps the page and related state in
 sync.
 """
+
 from __future__ import annotations
 
 import streamlit as st
-
 
 # --------------------------------------------------------------------------- #
 # Top-level pages

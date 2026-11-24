@@ -13,6 +13,7 @@ Key resolution (in order):
     2. APP_SECRET_KEY env var      — derivation fallback (SHA-256 → base64)
     3. Refuse to run with no key   — prevents silent encryption under a default
 """
+
 from __future__ import annotations
 
 import base64
@@ -32,9 +33,7 @@ __all__ = [
 ]
 
 
-DECRYPT_ERROR = (
-    "Unable to decrypt stored secret. Verify FERNET_KEY / APP_SECRET_KEY."
-)
+DECRYPT_ERROR = "Unable to decrypt stored secret. Verify FERNET_KEY / APP_SECRET_KEY."
 
 
 # --------------------------------------------------------------------------- #

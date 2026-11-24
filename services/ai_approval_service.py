@@ -1,4 +1,5 @@
 """Queue / approve AI responses into the library."""
+
 from __future__ import annotations
 
 import uuid
@@ -7,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from auth import allowed
-from database import SessionLocal, Response, Category, AuditLog, User
+from database import AuditLog, Category, Response, SessionLocal, User
 
 MAX_BODY = 20000
 
@@ -64,7 +65,7 @@ def submit_pending(
 
 
 def list_pending(project_id: int | None = None) -> list[dict]:
-    from database import AiPendingResponse, User, Project
+    from database import AiPendingResponse, Project, User
 
     with SessionLocal() as db:
         stmt = (
@@ -95,7 +96,9 @@ def list_pending(project_id: int | None = None) -> list[dict]:
         return out
 
 
-def approve_pending(pending_id: int, reviewer_id: int, category_id: int | None = None) -> str | None:
+def approve_pending(
+    pending_id: int, reviewer_id: int, category_id: int | None = None
+) -> str | None:
     """Save into library; returns new response id."""
     from database import AiPendingResponse
 

@@ -1,4 +1,5 @@
 """Jira status line for the project page (the 🎫 button on each card does the work)."""
+
 from __future__ import annotations
 
 import streamlit as st
@@ -12,6 +13,10 @@ def render_jira_panel(user, project) -> None:
         return
     status = jira_service.credential_status(user.id)
     if status.get("connected"):
-        st.caption(f"🎫 Jira connected as **{status.get('display_name')}** — use 🎫 on a response to comment, log time or transition.")
+        st.caption(
+            f"🎫 Jira connected as **{status.get('display_name')}** — use 🎫 on a response to comment, log time or transition."
+        )
     else:
-        st.caption("🎫 Jira not connected — connect it under **Personal settings → Jira connection**.")
+        st.caption(
+            "🎫 Jira not connected — connect it under **Personal settings → Jira connection**."
+        )

@@ -1,4 +1,5 @@
 """Optional library seed. Disabled unless ALLOW_SEED_DATA=true."""
+
 from __future__ import annotations
 
 import json

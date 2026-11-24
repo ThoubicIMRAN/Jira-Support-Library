@@ -9,6 +9,7 @@ Public API:
     set_correlation_id(value=None) -> str       # generate + set context
     correlation_id                              # ContextVar for direct use
 """
+
 from __future__ import annotations
 
 import json
