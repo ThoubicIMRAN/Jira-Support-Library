@@ -17,6 +17,10 @@ from utils.errors import safe_message
 
 logger = logging.getLogger(__name__)
 
+# A chain entry whose id starts with this marker is a step *name* (from a saved chain preset):
+# it is looked up on the ticket's current status when it runs, not when it was selected.
+CHAIN_BY_NAME = "name:"
+
 
 @dataclass
 class StepOutcome:
@@ -66,6 +70,7 @@ def run_post_steps(
     files: Iterable[tuple[str, bytes, str | None]] = (),
     time_raw: str = "",
     chain: list[tuple[str, str]] | None = None,
+    jira_project_key: str | None = None,
 ) -> StepOutcome:
     """Execute the selected actions in a fixed order; ``done`` is updated in place."""
     out = StepOutcome()
@@ -127,6 +132,12 @@ def run_post_steps(
             out,
         )
 
+    def apply_transition(tid: str, lab: str) -> None:
+        if tid.startswith(CHAIN_BY_NAME):
+            jira_service.transition_by_name(user_id, issue_key, lab, jira_project_key=jira_project_key)
+        else:
+            jira_service.multi_step_transition(user_id, issue_key, [tid], labels=[lab])
+
     for i, (tid, label) in enumerate(chain):
         before = len(out.errors)
         # one step at a time: availability is re-checked against the ticket's *current* status,
@@ -135,12 +146,7 @@ def run_post_steps(
             done,
             f"transition:{i}:{tid}",
             f"Status → {label}",
-            lambda t=tid, lab=label: (
-                jira_service.multi_step_transition(
-                    user_id, issue_key, [t], labels=[lab]
-                )
-                and None
-            ),
+            lambda t=tid, lab=label: apply_transition(t, lab),
             out,
         )
         if len(out.errors) > before:
