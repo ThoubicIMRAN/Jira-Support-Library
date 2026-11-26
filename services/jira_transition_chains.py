@@ -63,6 +63,22 @@ def list_transition_chains(jira_project_key: str | None = None) -> list[dict]:
         return out
 
 
+def chains_for_project(jira_project_key: str | None) -> list[dict]:
+    """Chains to offer for a ticket: that project's presets plus the ``*`` (all projects) ones.
+
+    If both define the same name, the project-specific chain wins.
+    """
+    key = (jira_project_key or "").strip().upper()
+    chosen: dict[str, dict] = {}
+    for chain in list_transition_chains(key or None):
+        if not key and chain["jira_project_key"] != "*":
+            continue  # unknown project: only the global presets apply
+        current = chosen.get(chain["name"])
+        if current is None or (current["jira_project_key"] == "*" and chain["jira_project_key"] != "*"):
+            chosen[chain["name"]] = chain
+    return sorted(chosen.values(), key=lambda c: (c["sort_order"], c["name"].lower()))
+
+
 def upsert_transition_chain(
     *,
     jira_project_key: str,
@@ -71,7 +87,7 @@ def upsert_transition_chain(
     sort_order: int = 0,
     chain_id: int | None = None,
 ) -> None:
-    jira_project_key = (jira_project_key or "*").strip() or "*"
+    jira_project_key = (jira_project_key or "*").strip().upper() or "*"  # Jira keys are upper case
     name = (name or "").strip()
     steps = [str(s).strip() for s in (steps or []) if str(s).strip()]
     if not name:
@@ -80,6 +96,13 @@ def upsert_transition_chain(
         raise ValueError("At least one transition step is required.")
     with SessionLocal() as db:
         row = db.get(JiraTransitionChain, chain_id) if chain_id else None
+        if not row:  # saving the same name for the same project again updates it instead of failing
+            row = db.scalar(
+                select(JiraTransitionChain).where(
+                    JiraTransitionChain.jira_project_key == jira_project_key,
+                    JiraTransitionChain.name == name,
+                )
+            )
         if not row:
             row = JiraTransitionChain(
                 jira_project_key=jira_project_key,
