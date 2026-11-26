@@ -19,7 +19,9 @@ from services.jira_dialog_safety import (
     execution_fingerprint,
     unresolved_placeholders,
 )
+from services.jira_dialog_helpers import first_step_problem, preset_chain
 from services.jira_post_flow import run_post_steps
+from services.jira_transition_chains import chains_for_project
 from services.jira_text import build_comment_preview
 from utils.errors import log_ignored
 
@@ -528,15 +530,45 @@ def jira_action_dialog(
         lab = x.get("label") or x.get("name") or str(x.get("id"))
         labels_ordered.append(lab)
         label_to_id[lab] = str(x.get("id"))
+    # Saved chains (Admin Settings > Jira > Transition chains) run as one preset.
+    preset_steps: list[str] = []
+    chain_problem = ""
+    try:
+        saved_chains = chains_for_project(issue.get("project_key"))
+    except Exception:  # noqa: BLE001 - presets are optional; the manual picker still works
+        logger.exception("could not load transition chains")
+        saved_chains = []
+    if saved_chains:
+        preset_key = _sk(response_id, "chain_preset")
+        preset_options = ["None", *[c["name"] for c in saved_chains]]
+        if st.session_state.get(preset_key) not in preset_options:
+            st.session_state.pop(preset_key, None)  # the chain was renamed or deleted
+        preset_name = t2.selectbox(
+            "Transition chain",
+            preset_options,
+            key=preset_key,
+            help="Runs a saved set of status changes one after another, each checked against the ticket's current status.",
+        )
+        preset_steps = next((c["steps"] for c in saved_chains if c["name"] == preset_name), [])
     selected_labels = t2.multiselect(
         "Transitions (order = steps)",
         labels_ordered,
         key=_sk(response_id, "transitions_multi"),
-        help="Select one or more. Applied in list order with the comment.",
+        disabled=bool(preset_steps),
+        help="Select one or more. Applied in list order with the comment."
+        if not preset_steps
+        else "A transition chain is selected. Choose None above to pick transitions by hand.",
     )
-    transition_chain = [
-        (label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id
-    ]
+    if preset_steps:
+        transition_chain = preset_chain(preset_steps)
+        t2.caption("Steps: " + " \u2192 ".join(preset_steps))
+        chain_problem = first_step_problem(preset_steps, transitions)
+        if chain_problem:
+            t2.warning(_safe_text(chain_problem, 300))
+    else:
+        transition_chain = [
+            (label_to_id[lab], lab) for lab in selected_labels if lab in label_to_id
+        ]
 
     uploads = st.file_uploader(
         "Attachments",
@@ -907,7 +939,7 @@ def jira_action_dialog(
             else:
                 return
 
-        can_post = not leftover and has_selected_action
+        can_post = not leftover and has_selected_action and not chain_problem
         label = "Retry failed steps" if done else "Post to Jira"
         if st.button(
             label,
@@ -918,6 +950,8 @@ def jira_action_dialog(
             help=(
                 "Fill or remove comment placeholders"
                 if leftover
+                else "The chain cannot start from this ticket's current status"
+                if chain_problem
                 else "Select at least one Jira action"
                 if not has_selected_action
                 else "Run the selected actions"
@@ -941,6 +975,7 @@ def jira_action_dialog(
                     files=files,
                     time_raw=time_raw,
                     chain=transition_chain,
+                    jira_project_key=issue.get("project_key"),
                 )
             st.session_state[steps_key] = done
             if any(n.startswith("file:paste_") for n in done):
